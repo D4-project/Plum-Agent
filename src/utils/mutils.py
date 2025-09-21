@@ -3,6 +3,7 @@
 import subprocess
 import shutil
 import logging
+import threading
 from subprocess import CalledProcessError
 
 logger = logging.getLogger("Plum_Agent")
@@ -52,22 +53,33 @@ def locate_elf(filename):
         return (False, None)
 
 
-def run_elf(elfpath, options):
+def run_elf(elfpath, options=None):
     '''
         This function execute and wait the end.
         It push log to the console.
     '''
-
     cmd = [elfpath] + (options if options else [])
 
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
     )
 
-    for line in process.stdout:
-        logger.info(line.strip())
+    def reader(pipe, log_func, prefix=""):
+        for line in iter(pipe.readline, ''):
+            log_func(f"{prefix}{line.strip()}")
+        pipe.close()
+
+    t_out = threading.Thread(target=reader, args=(process.stdout, logger.info))
+    t_err = threading.Thread(target=reader, args=(process.stderr, logger.error,))
+
+    t_out.start()
+    t_err.start()
 
     process.wait()
+    t_out.join()
+    t_err.join()

@@ -16,16 +16,28 @@ from utils.meta import print_meta
 from utils.mutils import locate_elf, run_elf
 from utils.netutils import getextip
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler()],
-)
-
-logger = logging.getLogger("Plum_Agent")
-
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# Initiate loggers.
+logger = logging.getLogger("Plum_Agent")
+logger.setLevel(logging.DEBUG)  # Niveau global
+
+# Nice and color full console handder
+console_handler = RichHandler()
+console_handler.setLevel(logging.INFO)
+
+# File Handler (auto create folder)
+log_dir = os.path.join(THIS_DIR, "log")
+os.makedirs(log_dir, exist_ok=True) 
+file_handler = logging.FileHandler(os.path.join(log_dir, "agent.log"), mode="a")
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]")
+file_handler.setFormatter(file_formatter)
+
+# Activate log handlers
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
 try:
     with open(
@@ -78,8 +90,7 @@ def set_config(prompt_args):
     if flag_setupchanged:
         save_config()
 
-
-def setup(cmd_args):
+def setup():
     '''
     Agent setup before execution
 
@@ -128,10 +139,6 @@ def setup(cmd_args):
     if flag_setupchanged:
         save_config()
 
-    # post config save, set debug.
-    if cmd_args.verbose:
-        CONFIG["verbose"] = True
-
 def scan():
     '''
     Do a Scan Job
@@ -140,9 +147,10 @@ def scan():
     if CONFIG.get("verbose"):
         dbg_flag = "-v"
 
-    run_args = ["-Pn", "-p", "80,443", "www.circl.lu", "-oX", "output.xml", 
+    run_args = ["-Pn", "-p", "80,443", "www.circl.lu", "-oX", "output.xml",
                 "--no-stylesheet", dbg_flag]
     run_args = [arg for arg in run_args if arg]
+    logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     run_elf(CONFIG.get("nmap_path"), run_args)
 
 def loop(repeat):
@@ -178,18 +186,38 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger("urllib3").setLevel(logging.DEBUG)
+        CONFIG["verbose"]=True
+        console_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.DEBUG)
+
+        # Configure urllib3 for debug logging
+        urllib3_logger = logging.getLogger("urllib3")
+        urllib3_logger.setLevel(logging.DEBUG)
+        urllib3_logger.propagate = False  # Add a direct handler
+        for h in list(urllib3_logger.handlers):
+            urllib3_logger.removeHandler(h)
+
+        # Put handler to our direct handler
+        class RedirectHandler(logging.Handler):
+            '''
+            Black magic to put handler to our direct handler
+            '''
+            def emit(self, record):
+                logger.handle(record)
+
+        urllib3_logger.addHandler(RedirectHandler())
+
+
 
     print_meta()
     logger.debug("Loaded config: %s", CONFIG)
     if args.setup:
         # Config then AutoSetup
-        setup(args)
+        setup()
         set_config(args)
     else:
         # Run mode
-        setup(args) # Autoconf.
+        setup() # Autoconf.
         set_config(args) # Command line Conf.
         if args.once:
             loop(False)
