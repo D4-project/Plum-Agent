@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # coding=utf-8
 
-'''
+"""
 Plum Agent Main code
-'''
+"""
 
 import logging
 import os
@@ -18,16 +18,19 @@ from utils.netutils import getextip, robust_request
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 class APIPath:
-    '''
-        Simple class to describe bot API endpoints.
-    '''
+    """
+    Simple class to describe bot API endpoints.
+    """
+
     def __init__(self, host):
         self.host = host.rstrip("/")  # remove trailing slash
-        self.ready     = f"{self.host}/bot_api/status"
-        self.register  = f"{self.host}/bot_api/beacon"
-        self.getjob    = f"{self.host}/bot_api/getjob"
-        self.sndjob    = f"{self.host}/bot_api/sndjob"
+        self.ready = f"{self.host}/bot_api/status"
+        self.register = f"{self.host}/bot_api/beacon"
+        self.getjob = f"{self.host}/bot_api/getjob"
+        self.sndjob = f"{self.host}/bot_api/sndjob"
+
 
 # Initiate loggers.
 logger = logging.getLogger("Plum_Agent")
@@ -42,7 +45,9 @@ log_dir = os.path.join(THIS_DIR, "log")
 os.makedirs(log_dir, exist_ok=True)
 file_handler = logging.FileHandler(os.path.join(log_dir, "agent.log"), mode="a")
 file_handler.setLevel(logging.INFO)
-file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]")
+file_formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
+)
 file_handler.setFormatter(file_formatter)
 
 # Activate log handlers
@@ -55,7 +60,7 @@ try:
     ) as f:
         CONFIG = yaml.safe_load(f)
         if not CONFIG:
-            CONFIG = {} # In case of empty file
+            CONFIG = {}  # In case of empty file
 except FileNotFoundError:
     CONFIG = {}
 logger.debug("Loaded config: %s", CONFIG)
@@ -63,22 +68,25 @@ logger.debug("Loaded config: %s", CONFIG)
 # Global conf for app paths.
 APIPATH = None
 
+
 def save_config():
-    '''
+    """
     This function save the globalconfig
-    '''
+    """
     # Never save some paramaters.
     svg_config = CONFIG
     for item in ["verbose", "extip"]:
         svg_config.pop(item, None)
 
     with open(
-        os.path.join(THIS_DIR, "config", "config.yaml"), "w", encoding="utf-8") as of:
+        os.path.join(THIS_DIR, "config", "config.yaml"), "w", encoding="utf-8"
+    ) as of:
         yaml.safe_dump(svg_config, of, default_flow_style=False, allow_unicode=True)
     logger.debug("Saved configuration: %s", svg_config)
 
+
 def setup(cmd_args):
-    '''
+    """
     Agent setup before execution
 
     The setup will ensure that nmap is reachable,
@@ -87,7 +95,7 @@ def setup(cmd_args):
     The API Key and Island host is configured
     The Island is reachable and the API key is valid.
     TODO: Override external IP
-    '''
+    """
 
     flag_setupchanged = False
 
@@ -142,16 +150,18 @@ def setup(cmd_args):
 
     # If execution required, we will validate Island availability
     if not cmd_args.setup:
-        CONFIG["botinfo"] = get_bot_info(CONFIG.get("uid"),CONFIG.get("extip"))
+        CONFIG["botinfo"] = get_bot_info(CONFIG.get("uid"), CONFIG.get("extip"))
         global APIPATH
         APIPATH = APIPath(CONFIG.get("island"))
         logger.info("Check if Island reachable")
         logger.debug("Validation address %s", APIPATH.ready)
 
-        bot_report = { "botinfo": CONFIG.get("botinfo")}
-        ready_msg = robust_request(APIPATH.ready, method="POST", data=bot_report, max_retries=3)
+        bot_report = {"botinfo": CONFIG.get("botinfo")}
+        ready_msg = robust_request(
+            APIPATH.ready, method="POST", data=bot_report, max_retries=3
+        )
         if ready_msg:
-            ready_msg = Dict2obj(ready_msg) # convert to obj.
+            ready_msg = Dict2obj(ready_msg)  # convert to obj.
             if not ready_msg.message == "ready":
                 logger.error("Island is not ready or bad host configured")
                 sys.exit(5)
@@ -161,27 +171,35 @@ def setup(cmd_args):
 
         # End of Setup, Island Reachable
 
+
 def scan():
-    '''
+    """
     Do a Scan Job
-    '''
+    """
 
     dbg_flag = ""
     if CONFIG.get("verbose"):
         dbg_flag = "-v"
 
-
-    run_args = ["-Pn", "-p", "80,443", "www.circl.lu", "-oX", "output.xml",
-                "--no-stylesheet", dbg_flag]
+    run_args = [
+        "-Pn",
+        "-p",
+        "80,443",
+        "www.circl.lu",
+        "-oX",
+        "output.xml",
+        "--no-stylesheet",
+        dbg_flag,
+    ]
     run_args = [arg for arg in run_args if arg]
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     run_elf(CONFIG.get("nmap_path"), run_args)
 
 
 def loop(repeat):
-    '''
+    """
     Main Loop for Agent Execution
-    '''
+    """
 
     if repeat:
         logger.info("Starting to work endlessy")
@@ -200,7 +218,9 @@ if __name__ == "__main__":
     group.add_argument("-o", "--once", action="store_true", help="Run Once")
     group.add_argument("-d", "--daemon", action="store_true", help="Run Endlessly")
 
-    group.add_argument("-s", "--setup", action="store_true", help="Setup configuration only")
+    group.add_argument(
+        "-s", "--setup", action="store_true", help="Setup configuration only"
+    )
     parser.add_argument("-island", help="Hostname or IP of the Plum Island controller")
     parser.add_argument("-apikey", help="API Key")
 
@@ -212,7 +232,7 @@ if __name__ == "__main__":
 
     # Set Verbosity if required, including requests
     if args.verbose:
-        CONFIG["verbose"]=True
+        CONFIG["verbose"] = True
         console_handler.setLevel(logging.DEBUG)
         file_handler.setLevel(logging.DEBUG)
 
@@ -225,9 +245,10 @@ if __name__ == "__main__":
 
         # Put handler to our direct handler
         class RedirectHandler(logging.Handler):
-            '''
+            """
             Black magic to put handler to our direct handler
-            '''
+            """
+
             def emit(self, record):
                 logger.handle(record)
 
@@ -241,7 +262,7 @@ if __name__ == "__main__":
     try:
         setup(args)
         if args.setup:
-            sys.exit(0) # Setup only
+            sys.exit(0)  # Setup only
         else:
             # Run mode
             if args.once:
@@ -250,6 +271,6 @@ if __name__ == "__main__":
                 loop(True)
 
     except KeyboardInterrupt:
-        print() # Flush screen
+        print()  # Flush screen
         logger.warning("Keyboard Interruption, Shutting down")
         sys.exit(0)

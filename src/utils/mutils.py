@@ -1,6 +1,6 @@
-'''
-    This module hold generic common utils fonction
-'''
+"""
+This module hold generic common utils fonction
+"""
 
 import subprocess
 import shutil
@@ -10,8 +10,9 @@ from subprocess import CalledProcessError
 
 logger = logging.getLogger("Plum_Agent")
 
+
 def get_version():
-    '''
+    """
     Retrieves the current version of the code based on git tags or commit hash.
 
     Attempts to get the latest git tag. If no tag is found or the command fails,
@@ -20,7 +21,7 @@ def get_version():
 
     Returns:
         str: The git tag, a string in the format "untagged-<short_sha>", or "unknown".
-    '''
+    """
     try:
         tag = (
             subprocess.check_output(
@@ -45,11 +46,11 @@ def get_version():
 
 
 def locate_elf(filename):
-    '''
+    """
     This function find the path of a given executable
 
     Returns: str: path of the file
-    '''
+    """
     elf_path = shutil.which(filename)
     if elf_path:
         return (True, elf_path)
@@ -58,12 +59,12 @@ def locate_elf(filename):
 
 
 def run_elf(elfpath, options=None):
-    '''
-        This function execute and wait the end of the process.
-        It push log to the console.
-        Error as Error, text as Info
-    '''
-    cmd = [elfpath] + (options if options else []) # squash empty strings.
+    """
+    This function execute and wait the end of the process.
+    It push log to the console.
+    Error as Error, text as Info
+    """
+    cmd = [elfpath] + (options if options else [])  # squash empty strings.
 
     process = subprocess.Popen(
         cmd,
@@ -71,35 +72,42 @@ def run_elf(elfpath, options=None):
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        universal_newlines=True
+        universal_newlines=True,
     )
 
     def reader(pipe, log_func, prefix=""):
-        for line in iter(pipe.readline, ''):
+        for line in iter(pipe.readline, ""):
             log_func(f"{prefix}{line.strip()}")
         pipe.close()
 
     t_out = threading.Thread(target=reader, args=(process.stdout, logger.info))
-    t_err = threading.Thread(target=reader, args=(process.stderr, logger.error,))
+    t_err = threading.Thread(
+        target=reader,
+        args=(
+            process.stderr,
+            logger.error,
+        ),
+    )
 
     t_out.start()
     t_err.start()
 
-    process.wait() # Wait end of Process
+    process.wait()  # Wait end of Process
 
-    t_out.join() # Wait end of output
+    t_out.join()  # Wait end of output
     t_err.join()
 
 
 class Dict2obj:
-    '''
-    Converts a dict to object... 
-    Because obj.truc is shorter than obj.get("truc")  
-    '''
+    """
+    Converts a dict to object...
+    Because obj.truc is shorter than obj.get("truc")
+    """
+
     def __init__(self, sub_dict):
-        '''
+        """
         Convert to obj
-        '''
+        """
         for key, value in sub_dict.items():
             if isinstance(value, dict):
                 value = Dict2obj(value)
@@ -109,9 +117,9 @@ class Dict2obj:
         return f"{self.__class__.__name__}({self.__dict__})"
 
     def to_dict(self):
-        '''
-            Back conversion
-        '''
+        """
+        Back conversion
+        """
         result = {}
         for key, value in self.__dict__.items():
             if isinstance(value, Dict2obj):

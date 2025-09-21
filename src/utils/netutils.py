@@ -1,6 +1,6 @@
-'''
+"""
 Network Related functions
-'''
+"""
 
 import logging
 import random
@@ -15,10 +15,10 @@ logger = logging.getLogger("Plum_Agent")
 
 
 def getextip():
-    '''
+    """
     Resolve the external (non-RFC1918) IP (v4 or v6) of the host
     using external services.
-    '''
+    """
 
     providers = [
         "https://checkip.amazonaws.com",
@@ -47,16 +47,26 @@ def getextip():
                 # If we got internal IP, we got a severe issue
                 logger.error("Abnormal, RFC1918 IP detected: %s", ip)
 
-        except (Timeout, SSLError, ConnectionError, socket.gaierror, TypeError,
-                RequestException) as e:
-            logger.warning("Unable to determine external IP with provider %s: %s", provider, e)
+        except (
+            Timeout,
+            SSLError,
+            ConnectionError,
+            socket.gaierror,
+            TypeError,
+            RequestException,
+        ) as e:
+            logger.warning(
+                "Unable to determine external IP with provider %s: %s", provider, e
+            )
 
     logger.error("No more external IP provider available for discovery")
     return None
 
 
-def robust_request(url, method="GET", headers=None, data=None, params=None, max_retries=None):
-    '''
+def robust_request(
+    url, method="GET", headers=None, data=None, params=None, max_retries=None
+):
+    """
     Perform GET or POST request on API
     Retry on failure with progressive delay
     Automatically parses JSON and returns a Python dict.
@@ -67,20 +77,19 @@ def robust_request(url, method="GET", headers=None, data=None, params=None, max_
     data: dict for POST
     params: dict for GET params
     max_retries: optional, None = infinite
-    
+
     return dict or None if max retries reached
 
     TODO Print json error messages in debug.
-    '''
+    """
 
-    delays = [2, 5, 30, 60] # Retry Schedule
-    retry_delay = 300 # Last resort Retry
+    delays = [2, 5, 30, 60]  # Retry Schedule
+    retry_delay = 300  # Last resort Retry
     attempts = 0
 
     method = method.upper()
     if method not in ("GET", "POST"):
         raise ValueError("method must be 'GET' or 'POST'")
-
 
     while True:
         try:
@@ -88,7 +97,13 @@ def robust_request(url, method="GET", headers=None, data=None, params=None, max_
                 response = requests.get(url, headers=headers, params=params, timeout=10)
             else:
                 logger.debug("Data: %s", data)
-                response = requests.post(url, headers=headers, json=json.dumps(data), params=params, timeout=10)
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=json.dumps(data),
+                    params=params,
+                    timeout=10,
+                )
             if response.status_code != 200:
                 logger.error("%s %s -> %s", method, url, response.status_code)
             else:
