@@ -1,4 +1,5 @@
 src/config/
+src/log
 __pycache__
 .venv
 *.xml
