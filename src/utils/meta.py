@@ -20,7 +20,7 @@ def print_meta():
     """
     console = Console()
     # pylint: disable = C0301
-    console.log(f"[bold]Plum Island Scanning Agent v {get_version()}[/bold]")
+    console.log("[bold]Plum Island Scanning Agent[/bold]")
     console.log(f"Licensed under the terms of the {__license__}")
     console.log(f"Another D4 project by CIRCL - 2025-{__curr_year__} - https://d4-project.org")
     console.log(f"Device: {DEVICE_MODEL} - Plum Agent: {APP_VERSION}")

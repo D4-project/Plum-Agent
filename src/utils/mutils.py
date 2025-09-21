@@ -2,8 +2,10 @@
 
 import subprocess
 import shutil
+import logging
 from subprocess import CalledProcessError
 
+logger = logging.getLogger("Plum_Agent")
 
 def get_version():
     """
@@ -40,11 +42,32 @@ def get_version():
 
 
 def locate_elf(filename):
-    """
+    '''
     This function find the path of a given executable
-    """
+    '''
     elf_path = shutil.which(filename)
     if elf_path:
         return (True, elf_path)
     else:
         return (False, None)
+
+
+def run_elf(elfpath, options):
+    '''
+        This function execute and wait the end.
+        It push log to the console.
+    '''
+
+    cmd = [elfpath] + (options if options else [])
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    for line in process.stdout:
+        logger.info(line.strip())
+
+    process.wait()

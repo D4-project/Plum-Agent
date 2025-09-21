@@ -13,7 +13,7 @@ import uuid
 import yaml
 from rich.logging import RichHandler
 from utils.meta import print_meta
-from utils.mutils import locate_elf
+from utils.mutils import locate_elf, run_elf
 from utils.netutils import getextip
 
 logging.basicConfig(
@@ -31,20 +31,55 @@ try:
     with open(
         os.path.join(THIS_DIR, "config", "config.yaml"), "r", encoding="utf-8"
     ) as f:
-        config = yaml.safe_load(f)
+        CONFIG = yaml.safe_load(f)
+        if not CONFIG:
+            CONFIG = {} # In case of empty file
 except FileNotFoundError:
-    config = {}
+    CONFIG = {}
+logger.debug("Loaded config: %s", CONFIG)
 
-def set_config():
+def save_config():
     '''
-    This function will setup the tool if required
+    This function save the globalconfig
+    '''
+    logger.debug("%s", CONFIG)
+    # Neves save Verbose.
+
+    verbose = CONFIG.get("verbose")
+    CONFIG["verbose"] = None
+
+    with open(
+        os.path.join(THIS_DIR, "config", "config.yaml"), "w", encoding="utf-8") as of:
+        yaml.safe_dump(CONFIG, of, default_flow_style=False, allow_unicode=True)
+
+    CONFIG["verbose"] = verbose
+
+
+def set_config(prompt_args):
+    '''
+    This function will setup the tool if required by command line.
     It may setup:
         Plum-Island Hostname
         Api-Key
         Fixed External IP
     '''
 
-def setup():
+    flag_setupchanged = False
+
+    if prompt_args.island:
+        CONFIG["island"] = prompt_args.island
+        logger.info("PluM Island set to %s", prompt_args.island)
+        flag_setupchanged = True
+    if prompt_args.apikey:
+        CONFIG["apikey"] = prompt_args.apikey
+        logger.debug("API Key set")
+        flag_setupchanged = True
+
+    if flag_setupchanged:
+        save_config()
+
+
+def setup(cmd_args):
     '''
     Agent setup before execution
 
@@ -62,37 +97,67 @@ def setup():
         logger.error("Nmap binary not found in path, please install it")
         sys.exit(1)
     logger.info("Nmap found in %s", nmap_path)
-    config["nmap_path"] = nmap_path
+    CONFIG["nmap_path"] = nmap_path
 
     # Retrieve or regenerate UUID of the agent
-    if not config.get("uid"):
+    if not CONFIG.get("uid"):
         uid = uuid.uuid4()
         logger.info("New UUID generated %s", uid)
-        config["uid"] = str(uid)
+        CONFIG["uid"] = str(uid)
         flag_setupchanged = True
     else:
-        logger.info("Agent UID %s", config.get("uid"))
+        logger.info("Agent UID %s", CONFIG.get("uid"))
 
     # Check External IP
-    config["extip"] = getextip()
-    if not config.get("extip"):
+    CONFIG["extip"] = getextip()
+    if not CONFIG.get("extip"):
         logger.error("External IP could not be determined")
         sys.exit(2)
 
+    # Check API Key
+    if not CONFIG.get("apikey"):
+        logger.error("Missing API Key, configure with -s -apikey")
+        sys.exit(3)
+
+    # Check Controller destination
+    if not CONFIG.get("island"):
+        logger.error("Missing Plum Island controller host, configure with -s -island")
+        sys.exit(4)
+
     # If config changed save it.
     if flag_setupchanged:
-        with open(
-            os.path.join(THIS_DIR, "config", "config.yaml"), "w", encoding="utf-8"
-        ) as of:
-            yaml.safe_dump(config, of, default_flow_style=False, allow_unicode=True)
+        save_config()
 
+    # post config save, set debug.
+    if cmd_args.verbose:
+        CONFIG["verbose"] = True
+
+def scan():
+    '''
+    Do a Scan Job
+    '''
+    dbg_flag = ""
+    if CONFIG.get("verbose"):
+        dbg_flag = "-v"
+
+    run_args = ["-Pn", "-p", "80,443", "www.circl.lu", "-oX", "output.xml", 
+                "--no-stylesheet", dbg_flag]
+    run_args = [arg for arg in run_args if arg]
+    run_elf(CONFIG.get("nmap_path"), run_args)
 
 def loop(repeat):
-    """
+    '''
     Agent Execution
-    """
-    while repeat:
-        logger.info("Starting to work")
+    '''
+
+    if repeat:
+        logger.info("Starting to work endlessy")
+        while True:
+            logger.info("Starting to work endlessy")
+            scan()
+    else:
+        logger.info("Starting to work once")
+        scan()
 
 
 if __name__ == "__main__":
@@ -101,7 +166,11 @@ if __name__ == "__main__":
 
     group.add_argument("-o", "--once", action="store_true", help="Run Once")
     group.add_argument("-d", "--daemon", action="store_true", help="Run Endlessly")
-    group.add_argument("-s", "--setup", action="store_true", help="Setup configuration")
+
+    group.add_argument("-s", "--setup", action="store_true", help="Setup configuration and save config")
+    parser.add_argument("-island", help="Hostname or IP of the Plum Island controller")
+    parser.add_argument("-apikey", help="API Key")
+
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable debug output"
     )
@@ -113,13 +182,15 @@ if __name__ == "__main__":
         logging.getLogger("urllib3").setLevel(logging.DEBUG)
 
     print_meta()
+    logger.debug("Loaded config: %s", CONFIG)
     if args.setup:
         # Config then AutoSetup
-        set_config()
-        setup()
+        setup(args)
+        set_config(args)
     else:
         # Run mode
-        setup()
+        setup(args) # Autoconf.
+        set_config(args) # Command line Conf.
         if args.once:
             loop(False)
         elif args.daemon:
