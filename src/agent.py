@@ -26,7 +26,6 @@ class APIPath:
 
     def __init__(self, host):
         self.host = host.rstrip("/")  # remove trailing slash
-        self.ready = f"{self.host}/bot_api/status"
         self.register = f"{self.host}/bot_api/beacon"
         self.getjob = f"{self.host}/bot_api/getjob"
         self.sndjob = f"{self.host}/bot_api/sndjob"
@@ -154,11 +153,12 @@ def setup(cmd_args):
         global APIPATH
         APIPATH = APIPath(CONFIG.get("island"))
         logger.info("Check if Island reachable")
-        logger.debug("Validation address %s", APIPATH.ready)
+        logger.debug("Validation address %s", APIPATH.register)
 
-        bot_report = {"botinfo": CONFIG.get("botinfo")}
+        bot_report = CONFIG.get("botinfo")
+        bot_report["API_KEY"] = CONFIG.get("apikey")
         ready_msg = robust_request(
-            APIPATH.ready, method="POST", data=bot_report, max_retries=3
+            APIPATH.register, method="POST", data=bot_report, max_retries=3
         )
         if ready_msg:
             ready_msg = Dict2obj(ready_msg)  # convert to obj.
@@ -169,7 +169,7 @@ def setup(cmd_args):
             logger.error("Island is not ready or bad host configured")
             sys.exit(5)
 
-        # End of Setup, Island Reachable
+        # End of Setup, Island is Reachable
 
 
 def scan():
@@ -185,11 +185,11 @@ def scan():
         "-Pn",
         "-p",
         "80,443",
-        "www.circl.lu",
         "-oX",
         "output.xml",
         "--no-stylesheet",
         dbg_flag,
+        "www.circl.lu",
     ]
     run_args = [arg for arg in run_args if arg]
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)

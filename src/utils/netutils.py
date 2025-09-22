@@ -104,6 +104,7 @@ def robust_request(
                     params=params,
                     timeout=10,
                 )
+                logger.debug("Island Response: %s", response.text)
             if response.status_code != 200:
                 logger.error("%s %s -> %s", method, url, response.status_code)
             else:
