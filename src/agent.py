@@ -9,27 +9,13 @@ import logging
 import os
 import argparse
 import sys
-import uuid
 import yaml
 from rich.logging import RichHandler
-from utils.meta import print_meta, get_bot_info
-from utils.mutils import locate_elf, run_elf, Dict2obj
-from utils.netutils import get_ext_ip, robust_request
+from utils.meta import print_meta
+from utils.mutils import run_elf
+from utils.setup import setup
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-class APIPath:
-    """
-    Simple class to describe bot API endpoints.
-    """
-
-    def __init__(self, host):
-        self.host = host.rstrip("/")  # remove trailing slash
-        self.register = f"{self.host}/bot_api/beacon"
-        self.getjob = f"{self.host}/bot_api/getjob"
-        self.sndjob = f"{self.host}/bot_api/sndjob"
-
 
 # Initiate loggers.
 logger = logging.getLogger("Plum_Agent")
@@ -53,6 +39,7 @@ file_handler.setFormatter(file_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
+# Open Configuration File
 try:
     with open(
         os.path.join(THIS_DIR, "config", "config.yaml"), "r", encoding="utf-8"
@@ -63,123 +50,7 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 logger.debug("Loaded config: %s", CONFIG)
-
-# Global conf for app paths.
-APIPATH = None
-
-
-def save_config():
-    """
-    This function save the globalconfig
-    """
-    # Never save some paramaters.
-    svg_config = CONFIG
-    for item in ["verbose", "curr_ip"]:
-        svg_config.pop(item, None)
-
-    with open(
-        os.path.join(THIS_DIR, "config", "config.yaml"), "w", encoding="utf-8"
-    ) as of:
-        yaml.safe_dump(svg_config, of, default_flow_style=False, allow_unicode=True)
-    logger.debug("Saved configuration: %s", svg_config)
-
-
-def setup(cmd_args):
-    """
-    Agent setup before execution
-
-    The setup will ensure that nmap is reachable,
-    A UUID for this agent is generated.
-    The host may reach Internet and retrieve the external IP
-    The API Key and Island host is configured
-    The Island is reachable and the API key is valid.
-    TODO: Override external IP
-    """
-
-    flag_setupchanged = False
-
-    if cmd_args.island:
-        CONFIG["island"] = cmd_args.island
-        logger.info("PluM Island set to %s", cmd_args.island)
-        flag_setupchanged = True
-    if cmd_args.agentkey:
-        CONFIG["agent_key"] = cmd_args.agentkey
-        logger.debug("API Key set")
-        flag_setupchanged = True
-
-    if cmd_args.ipext:
-        CONFIG["ext_ip"] = cmd_args.ipext
-        logger.debug("External IP manually set")
-        flag_setupchanged = True
-
-    if flag_setupchanged:
-        save_config()
-
-    logger.info("Initialize Agent system")
-    present, nmap_path = locate_elf("nmap")
-    if not present:
-        logger.error("Nmap binary not found in path, please install it")
-        sys.exit(1)
-    logger.info("Nmap found in %s", nmap_path)
-    CONFIG["nmap_path"] = nmap_path
-
-    # Retrieve or regenerate UUID of the agent
-    if not CONFIG.get("uid"):
-        uid = uuid.uuid4()
-        logger.info("New UUID generated %s", uid)
-        CONFIG["uid"] = str(uid)
-        flag_setupchanged = True
-    else:
-        logger.info("Agent UID %s", CONFIG.get("uid"))
-
-    # Check External IP, Do it only if the IP is not hardcoded
-    if CONFIG.get("ext_ip"):
-        logger.debug("Static external IP set: %s", CONFIG.get("ext_ip"))
-        CONFIG["curr_ip"] = CONFIG.get("ext_ip")
-    else:
-        CONFIG["curr_ip"] = get_ext_ip()
-        if not CONFIG.get("curr_ip"):
-            logger.error("External IP could not be determined")
-            sys.exit(2)
-
-    # Check API Key
-    if not CONFIG.get("agent_key"):
-        logger.error("Missing API Key, configure with -s -agent_key")
-        sys.exit(3)
-
-    # Check Controller destination
-    if not CONFIG.get("island"):
-        logger.error("Missing Plum Island controller host, configure with -s -island")
-        sys.exit(4)
-
-    # If config changed save it.
-    if flag_setupchanged:
-        save_config()
-
-    # If execution required, we will validate Island availability
-    if not cmd_args.setup:
-        CONFIG["botinfo"] = get_bot_info(CONFIG.get("uid"), CONFIG.get("curr_ip"))
-        print(CONFIG)
-        global APIPATH
-        APIPATH = APIPath(CONFIG.get("island"))
-        logger.info("Check if Island reachable")
-        logger.debug("Validation address %s", APIPATH.register)
-
-        bot_report = CONFIG.get("botinfo")
-        bot_report["AGENT_KEY"] = CONFIG.get("agent_key")
-        ready_msg = robust_request(
-            APIPATH.register, method="POST", data=bot_report, max_retries=3
-        )
-        if ready_msg:
-            ready_msg = Dict2obj(ready_msg)  # convert to obj.
-            if not ready_msg.message == "ready":
-                logger.error("Island is not ready or bad host configured")
-                sys.exit(5)
-        else:
-            logger.error("Island is not ready or bad host configured")
-            sys.exit(5)
-
-        # End of Setup, Island is Reachable
+CONFIG["THIS_DIR"] = THIS_DIR
 
 
 def scan():
@@ -271,7 +142,7 @@ if __name__ == "__main__":
 
     # Config and AutoSetup
     try:
-        setup(args)
+        CONFIG = setup(CONFIG, args)  # Update config
         if args.setup:
             sys.exit(0)  # Setup only
         else:
