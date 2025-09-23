@@ -14,7 +14,7 @@ from requests.exceptions import Timeout, SSLError, RequestException
 logger = logging.getLogger("Plum_Agent")
 
 
-def getextip():
+def get_ext_ip():
     """
     Resolve the external (non-RFC1918) IP (v4 or v6) of the host
     using external services.

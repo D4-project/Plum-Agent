@@ -14,7 +14,7 @@ import yaml
 from rich.logging import RichHandler
 from utils.meta import print_meta, get_bot_info
 from utils.mutils import locate_elf, run_elf, Dict2obj
-from utils.netutils import getextip, robust_request
+from utils.netutils import get_ext_ip, robust_request
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -74,7 +74,7 @@ def save_config():
     """
     # Never save some paramaters.
     svg_config = CONFIG
-    for item in ["verbose", "extip"]:
+    for item in ["verbose", "curr_ip"]:
         svg_config.pop(item, None)
 
     with open(
@@ -102,9 +102,14 @@ def setup(cmd_args):
         CONFIG["island"] = cmd_args.island
         logger.info("PluM Island set to %s", cmd_args.island)
         flag_setupchanged = True
-    if cmd_args.apikey:
-        CONFIG["apikey"] = cmd_args.apikey
+    if cmd_args.agentkey:
+        CONFIG["agent_key"] = cmd_args.agentkey
         logger.debug("API Key set")
+        flag_setupchanged = True
+
+    if cmd_args.ipext:
+        CONFIG["ext_ip"] = cmd_args.ipext
+        logger.debug("External IP manually set")
         flag_setupchanged = True
 
     if flag_setupchanged:
@@ -127,15 +132,19 @@ def setup(cmd_args):
     else:
         logger.info("Agent UID %s", CONFIG.get("uid"))
 
-    # Check External IP
-    CONFIG["extip"] = getextip()
-    if not CONFIG.get("extip"):
-        logger.error("External IP could not be determined")
-        sys.exit(2)
+    # Check External IP, Do it only if the IP is not hardcoded
+    if CONFIG.get("ext_ip"):
+        logger.debug("Static external IP set: %s", CONFIG.get("ext_ip"))
+        CONFIG["curr_ip"] = CONFIG.get("ext_ip")
+    else:
+        CONFIG["curr_ip"] = get_ext_ip()
+        if not CONFIG.get("curr_ip"):
+            logger.error("External IP could not be determined")
+            sys.exit(2)
 
     # Check API Key
-    if not CONFIG.get("apikey"):
-        logger.error("Missing API Key, configure with -s -apikey")
+    if not CONFIG.get("agent_key"):
+        logger.error("Missing API Key, configure with -s -agent_key")
         sys.exit(3)
 
     # Check Controller destination
@@ -149,14 +158,15 @@ def setup(cmd_args):
 
     # If execution required, we will validate Island availability
     if not cmd_args.setup:
-        CONFIG["botinfo"] = get_bot_info(CONFIG.get("uid"), CONFIG.get("extip"))
+        CONFIG["botinfo"] = get_bot_info(CONFIG.get("uid"), CONFIG.get("curr_ip"))
+        print(CONFIG)
         global APIPATH
         APIPATH = APIPath(CONFIG.get("island"))
         logger.info("Check if Island reachable")
         logger.debug("Validation address %s", APIPATH.register)
 
         bot_report = CONFIG.get("botinfo")
-        bot_report["API_KEY"] = CONFIG.get("apikey")
+        bot_report["AGENT_KEY"] = CONFIG.get("agent_key")
         ready_msg = robust_request(
             APIPATH.register, method="POST", data=bot_report, max_retries=3
         )
@@ -222,7 +232,8 @@ if __name__ == "__main__":
         "-s", "--setup", action="store_true", help="Setup configuration only"
     )
     parser.add_argument("-island", help="Hostname or IP of the Plum Island controller")
-    parser.add_argument("-apikey", help="API Key")
+    parser.add_argument("-agentkey", help="Agent Key")
+    parser.add_argument("-ipext", help="Force External IP")
 
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable debug output"
