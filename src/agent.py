@@ -9,11 +9,14 @@ import logging
 import os
 import argparse
 import sys
+import uuid
+import time
 import yaml
 from rich.logging import RichHandler
 from utils.meta import print_meta
 from utils.mutils import run_elf
 from utils.setup import setup
+from utils.netutils import robust_request
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -58,23 +61,69 @@ def scan():
     Do a Scan Job
     """
 
+    job = robust_request(
+        CONFIG.get("APIPATH").getjob,
+        method="POST",
+        data=CONFIG.get("botinfo"),
+    )
+    logger.debug("Message Received: %s", job.get("message"))
+
+    # Validate JOB
+    range_toscan = job.get("message").get("job")
+    if len(range_toscan) == 0:
+        logger.info("No Job to process")
+        if CONFIG.get("daemon"):
+            logger.info("Sleeping 30'")
+            time.sleep(30)
+        return False
+
+    # Validate the  UID
+    range_uid = job.get("message").get("job_uid")
+    try:
+        uuid.UUID(str(range_uid))
+    except ValueError:
+        logger.error("Invalid UID format")
+        return False
+
+    logger.info("Job UID %s Received, Target is %s", range_toscan, range_uid)
+
     dbg_flag = ""
     if CONFIG.get("verbose"):
         dbg_flag = "-v"
+
+    output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
 
     run_args = [
         "-Pn",
         "-p",
         "80,443",
         "-oX",
-        "output.xml",
+        output_xml,
         "--no-stylesheet",
         dbg_flag,
-        "www.circl.lu",
+        range_toscan,
     ]
     run_args = [arg for arg in run_args if arg]
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     run_elf(CONFIG.get("nmap_path"), run_args)
+
+    # fetching report.
+    if os.path.isfile(output_xml):
+        with open(output_xml, "r", encoding="utf-8") as file:
+            results = file.read()
+        os.remove(output_xml)
+    else:
+        logger.error("No Scan output file")
+
+    data = CONFIG.get("botinfo")
+    data = data | {"JOB_UID": str(range_uid), "RESULT": results}
+
+    upjob = robust_request(
+        CONFIG.get("APIPATH").sndjob,
+        method="POST",
+        data=data,
+    )
+    logger.debug("Message Received: %s", job.get("message"))
 
 
 def loop(repeat):
@@ -85,7 +134,6 @@ def loop(repeat):
     if repeat:
         logger.info("Starting to work endlessy")
         while True:
-            logger.info("Starting to work endlessy")
             scan()
     else:
         logger.info("Starting to work one time")
@@ -142,7 +190,10 @@ if __name__ == "__main__":
 
     # Config and AutoSetup
     try:
+        if args.daemon:
+            CONFIG["daemon"] = True
         CONFIG = setup(CONFIG, args)  # Update config
+
         if args.setup:
             sys.exit(0)  # Setup only
         else:
