@@ -2,3 +2,4 @@ rich
 PyYAML
 argparse
 requests
+nmap2json

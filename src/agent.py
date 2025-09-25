@@ -12,7 +12,9 @@ import sys
 import uuid
 import time
 import yaml
+import json
 from rich.logging import RichHandler
+from nmap2json import nmap_file_to_json
 from utils.meta import print_meta
 from utils.mutils import run_elf
 from utils.setup import setup
@@ -107,18 +109,20 @@ def scan():
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     run_elf(CONFIG.get("nmap_path"), run_args)
 
+    results = {}
     # fetching report.
     if os.path.isfile(output_xml):
-        with open(output_xml, "r", encoding="utf-8") as file:
-            results = file.read()
+        results = nmap_file_to_json(output_xml)
+        # with open(output_xml, "r", encoding="utf-8") as file:
+        #    results = file.read()
         os.remove(output_xml)
     else:
         logger.error("No Scan output file")
 
     data = CONFIG.get("botinfo")
-    data = data | {"JOB_UID": str(range_uid), "RESULT": results}
+    data = data | {"JOB_UID": str(range_uid), "RESULT": json.dumps(results)}
 
-    upjob = robust_request(
+    robust_request(
         CONFIG.get("APIPATH").sndjob,
         method="POST",
         data=data,
