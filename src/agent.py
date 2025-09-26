@@ -87,22 +87,30 @@ def scan():
         logger.error("Invalid UID format")
         return False
 
+    nmap_ports = ",".join(str(i) for i in job.get("message").get("nmap_ports"))
+    nmap_nse = ",".join( job.get("message").get("nmap_nse"))
+
     logger.info("Job UID %s Received, Target is %s", range_toscan, range_uid)
 
     dbg_flag = ""
+    trace = ""
     if CONFIG.get("verbose"):
         dbg_flag = "-v"
+        trace = "-script-trace"
 
     output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
 
     run_args = [
         "-Pn",
         "-p",
-        "80,443",
+        nmap_ports,
         "-oX",
         output_xml,
         "--no-stylesheet",
-        dbg_flag,
+        "--script",
+        nmap_nse,
+        dbg_flag, trace,
+
         range_toscan,
     ]
     run_args = [arg for arg in run_args if arg]
