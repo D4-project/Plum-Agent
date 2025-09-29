@@ -120,9 +120,7 @@ def scan():
     results = {}
     # fetching report.
     if os.path.isfile(output_xml):
-        results = nmap_file_to_json(output_xml)
-        # with open(output_xml, "r", encoding="utf-8") as file:
-        #    results = file.read()
+        results = nmap_file_to_json(output_xml, True, True)
         os.remove(output_xml)
     else:
         logger.error("No Scan output file")
