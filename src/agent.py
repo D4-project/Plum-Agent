@@ -88,7 +88,7 @@ def scan():
         return False
 
     nmap_ports = ",".join(str(i) for i in job.get("message").get("nmap_ports"))
-    nmap_nse = ",".join( job.get("message").get("nmap_nse"))
+    nmap_nse = ",".join(job.get("message").get("nmap_nse"))
 
     logger.info("Job UID %s Received, Target is %s", range_toscan, range_uid)
 
@@ -109,10 +109,13 @@ def scan():
         "--no-stylesheet",
         "--script",
         nmap_nse,
-        dbg_flag, trace,
-
-        range_toscan,
+        dbg_flag,
+        trace,
     ]
+    # Finally  Add the ranges to scan
+    for item in range_toscan.split(","):
+        run_args.append(item)
+
     run_args = [arg for arg in run_args if arg]
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     run_elf(CONFIG.get("nmap_path"), run_args)
