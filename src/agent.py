@@ -101,6 +101,13 @@ def scan():
     output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
 
     run_args = [
+        "-T4",
+        "--host-timeout",
+        "20s",
+        "--max-retries",
+        "2",
+        "--min-hostgroup",
+        "256",
         "-Pn",
         "-p",
         nmap_ports,
