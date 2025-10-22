@@ -30,7 +30,7 @@ source .venv/bin/activate
 pip install -r requirements.txt   
 
 ## Configuration
-cd src 
+cd src  
 python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX* 
 
 ## Execution
