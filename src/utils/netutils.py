@@ -28,6 +28,7 @@ def get_ext_ip():
         "https://api.ipify.org",
         "https://icanhazip.com",
         "http://ifconfig.me/ip",
+        "https://ip.circl.lu/raw",
     ]
 
     random.shuffle(providers)
