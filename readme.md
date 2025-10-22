@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 ## Configuration
 cd src
-python agent.py -s HOSTOFISLAND -agentkey XXXTHETOKENKEYXXXX
+python agent.py -s -island //HOSTOFISLAND -agentkey //XXXTHETOKENKEYXXXX
 
 ## Execution
 python agent -d
