@@ -103,7 +103,7 @@ def scan():
     run_args = [
         "-T4",
         "--host-timeout",
-        "20s",
+        "40s",
         "--max-retries",
         "2",
         "--min-hostgroup",
