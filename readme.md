@@ -21,7 +21,7 @@ nmap
 
 ## Installation
 
-## Setup  
+### Setup  
 sudo apt-get install nmap  
 git clone https://github.com/D4-project/Plum-Agent.git  
 cd Plum-Agent  
@@ -29,14 +29,14 @@ python -m venv .venv
 source .venv/bin/activate  
 pip install -r requirements.txt   
 
-## Configuration
+### Configuration
 cd src  
 python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX* 
 
-## Execution
+### Execution
 python agent -d 
 
-## Help
+### Help
 ```bash
 $ ./agent.py --help
 usage: agent.py [-h] (-o | -d | -s) [-island ISLAND] [-agentkey AGENTKEY] [-ipext IPEXT] [-v]
