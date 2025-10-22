@@ -1,7 +1,7 @@
 <div align="center">
   <img alt="d4-Plum-Island" src="https://raw.githubusercontent.com/D4-project/Plum-Island/master/documentation/media/plum_logo.png"   style="width:25%;" />
 
-<h1> Proactive Land Uncovering & Monitoring Pathogen Agent</h1>
+<h1> Proactive Land Uncovering & Monitoring<br>Pathogen Agent</h1>
   <img alt="d4-Plum-Island" src="https://raw.githubusercontent.com/D4-project/Plum-Island/master/documentation/media/plum_overview.png" />
 </div>
 <p>
