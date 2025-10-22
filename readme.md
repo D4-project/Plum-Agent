@@ -21,13 +21,13 @@ nmap
 
 ## Installation
 
-## Setup
-sudo apt-get install nmap 
-git clone https://github.com/D4-project/Plum-Agent.git 
-cd Plum-Agent 
-python -m venv .venv 
-source .venv/bin/activate 
-pip install -r requirements.txt 
+## Setup  
+sudo apt-get install nmap  
+git clone https://github.com/D4-project/Plum-Agent.git  
+cd Plum-Agent  
+python -m venv .venv  
+source .venv/bin/activate  
+pip install -r requirements.txt   
 
 ## Configuration
 cd src 
