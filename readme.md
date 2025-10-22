@@ -13,19 +13,15 @@
 ## Description
 This this tool is the working agent designed to work with Plum-Island
 
-# Proactive Land Uncovering & Monitoring 
-<p align="center">
-  <img alt="d4-Plum-Island" src="https://raw.githubusercontent.com/D4-project/Plum-Island/master/documentation/media/plum-overview.png" />
-</p>
-
-
 ## Technical requirements
 Python 3.10 or >
+
 ### Agent supported
 nmap
 
 ## Installation
 
+## Setup
 sudo apt-get install nmap
 git clone https://github.com/D4-project/Plum-Agent.git
 cd Plum-Agent
@@ -34,7 +30,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 ## Configuration
-cd src:w
+cd src
 python agent.py -s HOSTOFISLAND -agentkey XXXTHETOKENKEYXXXX
 
 ## Execution
