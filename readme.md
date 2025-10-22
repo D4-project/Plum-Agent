@@ -1,7 +1,7 @@
 <div align="center">
   <img alt="d4-Plum-Island" src="https://raw.githubusercontent.com/D4-project/Plum-Island/master/documentation/media/plum_logo.png"   style="width:25%;" />
 
-<h1> Proactive Land Uncovering & Monitoringi</h1><h1>Pathogen Agent</h1>
+<h1> Proactive Land Uncovering & Monitoring</h1><h1>Pathogen Agent</h1>
   <img alt="d4-Plum-Island" src="https://raw.githubusercontent.com/D4-project/Plum-Island/master/documentation/media/plum_overview.png" />
 </div>
 <p>
@@ -22,19 +22,19 @@ nmap
 ## Installation
 
 ## Setup
-sudo apt-get install nmap
-git clone https://github.com/D4-project/Plum-Agent.git
-cd Plum-Agent
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+sudo apt-get install nmap 
+git clone https://github.com/D4-project/Plum-Agent.git 
+cd Plum-Agent 
+python -m venv .venv 
+source .venv/bin/activate 
+pip install -r requirements.txt 
 
 ## Configuration
-cd src
-python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX*
+cd src 
+python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX* 
 
 ## Execution
-python agent -d
+python agent -d 
 
 ## Help
 ```bash
