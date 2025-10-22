@@ -22,7 +22,7 @@ nmap
 ## Installation
 Installation should stay simple.
 
-### Setup  
+### Setup
 sudo apt-get install nmap  
 git clone https://github.com/D4-project/Plum-Agent.git  
 cd Plum-Agent  
