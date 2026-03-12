@@ -87,6 +87,7 @@ def robust_request(
     delays = [2, 5, 30, 60]  # Retry Schedule
     retry_delay = 300  # Last resort Retry
     attempts = 0
+    timeout_wait = 45
 
     method = method.upper()
     if method not in ("GET", "POST"):
@@ -95,7 +96,9 @@ def robust_request(
     while True:
         try:
             if method == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response = requests.get(
+                    url, headers=headers, params=params, timeout=timeout_wait
+                )
             else:
                 logger.debug("Data: %s", data)
                 response = requests.post(
@@ -103,7 +106,7 @@ def robust_request(
                     headers=headers,
                     json=json.dumps(data),
                     params=params,
-                    timeout=10,
+                    timeout=timeout_wait,
                 )
                 logger.debug("Island Response: %s", response.text)
             if response.status_code != 200:
