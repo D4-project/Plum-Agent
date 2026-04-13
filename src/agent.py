@@ -13,6 +13,8 @@ import uuid
 import time
 import yaml
 import json
+import base64
+import hashlib
 from rich.logging import RichHandler
 from nmap2json import nmap_file_to_json
 from utils.meta import print_meta
@@ -58,20 +60,114 @@ logger.debug("Loaded config: %s", CONFIG)
 CONFIG["THIS_DIR"] = THIS_DIR
 
 
+def _nse_cache_dir():
+    """
+    Return the local cache directory for controller-managed NSE scripts.
+    """
+    cache_dir = os.path.join(CONFIG.get("THIS_DIR"), "nse_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _safe_nse_filename(name):
+    """
+    Restrict cached NSE files to their basename.
+    """
+    return os.path.basename(str(name or "").strip())
+
+
+def _sha256_file(path):
+    """
+    Compute the SHA-256 of a local file.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _collect_nse_hashes():
+    """
+    Return the local NSE cache hashes keyed by filename.
+    """
+    hashes = {}
+    cache_dir = _nse_cache_dir()
+    for entry in sorted(os.listdir(cache_dir)):
+        if not entry.endswith(".nse"):
+            continue
+        path = os.path.join(cache_dir, entry)
+        if os.path.isfile(path):
+            hashes[entry] = _sha256_file(path)
+    return hashes
+
+
+def _resolve_nse_targets(job_message):
+    """
+    Ensure all requested NSE scripts are present locally and return the paths to use
+    for Nmap. If the controller does not yet provide cache-aware payloads, fall back
+    to the raw script names for compatibility.
+    """
+    nse_descriptors = job_message.get("nse_scripts")
+    if nse_descriptors is None:
+        return job_message.get("nmap_nse") or []
+
+    cache_dir = _nse_cache_dir()
+    selected_paths = []
+
+    for descriptor in nse_descriptors:
+        nse_name = _safe_nse_filename(descriptor.get("name"))
+        expected_hash = str(descriptor.get("hash", "")).strip().lower()
+        if not nse_name or not expected_hash:
+            raise ValueError("Invalid NSE descriptor received from controller")
+
+        nse_path = os.path.join(cache_dir, nse_name)
+        current_hash = _sha256_file(nse_path) if os.path.isfile(nse_path) else None
+
+        if current_hash != expected_hash:
+            content_b64 = descriptor.get("content_b64")
+            if not content_b64:
+                raise ValueError(f"Missing updated NSE payload for {nse_name}")
+
+            file_bytes = base64.b64decode(content_b64)
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            if file_hash != expected_hash:
+                raise ValueError(f"Hash mismatch for {nse_name}")
+
+            tmp_path = f"{nse_path}.tmp"
+            with open(tmp_path, "wb") as handle:
+                handle.write(file_bytes)
+            os.replace(tmp_path, nse_path)
+            logger.info("NSE cache refresh: %s", nse_name)
+        else:
+            logger.info("NSE cache hit: %s", nse_name)
+
+        selected_paths.append(nse_path)
+
+    return selected_paths
+
+
 def scan():
     """
     Do a Scan Job
     """
 
+    job_request = dict(CONFIG.get("botinfo") or {})
+    job_request["NSE_HASHES"] = _collect_nse_hashes()
     job = robust_request(
         CONFIG.get("APIPATH").getjob,
         method="POST",
-        data=CONFIG.get("botinfo"),
+        data=job_request,
     )
+    if not job or "message" not in job:
+        logger.error("Invalid job response from controller")
+        return False
+
     logger.debug("Message Received: %s", job.get("message"))
+    job_message = job.get("message") or {}
 
     # Validate JOB
-    range_toscan = job.get("message").get("job")
+    range_toscan = job_message.get("job", "")
     if len(range_toscan) == 0:
         logger.info("No Job to process")
         if CONFIG.get("daemon"):
@@ -80,15 +176,24 @@ def scan():
         return False
 
     # Validate the  UID
-    range_uid = job.get("message").get("job_uid")
+    range_uid = job_message.get("job_uid")
     try:
         uuid.UUID(str(range_uid))
     except ValueError:
         logger.error("Invalid UID format")
         return False
 
-    nmap_ports = ",".join(str(i) for i in job.get("message").get("nmap_ports"))
-    nmap_nse = ",".join(job.get("message").get("nmap_nse"))
+    nmap_ports_list = job_message.get("nmap_ports") or []
+    if not nmap_ports_list:
+        logger.error("Job UID %s has no port definition", range_uid)
+        return False
+
+    nmap_ports = ",".join(str(i) for i in nmap_ports_list)
+    try:
+        nmap_nse_targets = _resolve_nse_targets(job_message)
+    except ValueError as error:
+        logger.error("Cannot prepare NSE scripts for job %s: %s", range_uid, error)
+        return False
 
     logger.info("Job UID %s Received, Target is %s", range_toscan, range_uid)
 
@@ -114,11 +219,12 @@ def scan():
         "-oX",
         output_xml,
         "--no-stylesheet",
-        "--script",
-        nmap_nse,
         dbg_flag,
         trace,
     ]
+    if nmap_nse_targets:
+        run_args.extend(["--script", ",".join(nmap_nse_targets)])
+
     # Finally  Add the ranges to scan
     for item in range_toscan.split(","):
         run_args.append(item)
@@ -135,7 +241,7 @@ def scan():
     else:
         logger.error("No Scan output file")
 
-    data = CONFIG.get("botinfo")
+    data = dict(CONFIG.get("botinfo") or {})
     data = data | {"JOB_UID": str(range_uid), "RESULT": json.dumps(results)}
 
     robust_request(
