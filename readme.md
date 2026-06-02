@@ -63,6 +63,46 @@ The container runs the agent in daemon mode. Three named volumes persist state a
 | `PLUM_EXT_IP` | No | Force the external IP reported to the controller (useful in air-gapped setups) |
 | `PLUM_VERBOSE` | No | Set to `1` to enable debug output |
 
+### Networking — connecting to Plum-Island
+
+Plum-Agent and Plum-Island run as separate Docker Compose stacks and are therefore on isolated networks by default. A shared external network is required so the agent container can reach the Island webapp.
+
+**One-time setup (run once on the host):**
+
+```bash
+docker network create plum_net
+```
+
+**Plum-Island** — add the network to its `docker-compose.yml`:
+
+```yaml
+services:
+  webapp:
+    networks:
+      - plum_net
+    # ... rest of service definition
+
+networks:
+  plum_net:
+    external: true
+```
+
+**Plum-Agent** — already configured in this repo's `docker-compose.yml`. Set `PLUM_ISLAND` to the Island's service name on the shared network:
+
+```bash
+PLUM_ISLAND=http://webapp:5000
+```
+
+Then restart both stacks:
+
+```bash
+# in Plum-Island directory
+docker compose up -d
+
+# in Plum-Agent directory
+docker compose up -d
+```
+
 ### Capabilities
 
 The container requests `NET_RAW` and `NET_ADMIN` so nmap can perform SYN scans.
