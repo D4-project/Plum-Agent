@@ -1,0 +1,19 @@
+services:
+  plum-agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - plum_config:/app/src/config
+      - plum_log:/app/src/log
+      - plum_nse_cache:/app/src/nse_cache
+
+volumes:
+  plum_config:
+  plum_log:
+  plum_nse_cache:

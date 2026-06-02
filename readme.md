@@ -37,6 +37,37 @@ python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX*
 ### Execution
 python agent -d 
 
+## Docker
+
+### Quick start
+
+```bash
+cp .env.example .env          # fill in PLUM_ISLAND and PLUM_AGENT_KEY
+docker compose up -d
+```
+
+The container runs the agent in daemon mode. Three named volumes persist state across restarts:
+
+| Volume | Path inside container | Contents |
+|--------|-----------------------|----------|
+| `plum_config` | `/app/src/config` | Agent UUID and saved configuration |
+| `plum_log` | `/app/src/log` | `agent.log` |
+| `plum_nse_cache` | `/app/src/nse_cache` | Controller-managed NSE scripts |
+
+### Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PLUM_ISLAND` | Yes | URL of the Plum-Island controller (e.g. `http://island:5000`) |
+| `PLUM_AGENT_KEY` | Yes | API key issued by Plum-Island |
+| `PLUM_EXT_IP` | No | Force the external IP reported to the controller (useful in air-gapped setups) |
+| `PLUM_VERBOSE` | No | Set to `1` to enable debug output |
+
+### Capabilities
+
+The container requests `NET_RAW` and `NET_ADMIN` so nmap can perform SYN scans.
+These capabilities are declared in `docker-compose.yml` and are required for proper operation.
+
 ### Help
 ```bash
 $ ./agent.py --help
