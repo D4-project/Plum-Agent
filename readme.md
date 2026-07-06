@@ -44,6 +44,16 @@ Or from the command line:
 python agent.py -s -scanhours 14-16
 ```
 
+Optional parallel scan jobs:
+```yaml
+scanparallel: 4
+```
+
+Or from the command line:
+```bash
+python agent.py -s -scanparallel 4
+```
+
 ### Execution
 python agent -d 
 
@@ -51,7 +61,7 @@ python agent -d
 ```bash
 $ ./agent.py --help
 usage: agent.py [-h] (-o | -d | -s) [-island ISLAND] [-agentkey AGENTKEY] [-ipext IPEXT]
-                [-scanhours SCANHOURS] [-v]
+                [-scanhours SCANHOURS] [-scanparallel SCANPARALLEL] [-v]
 
 Plum Discovery Agent
 
@@ -65,5 +75,7 @@ options:
   -ipext IPEXT        Force External IP
   -scanhours SCANHOURS
                       GMT scan window in HH-HH format, example 14-16
+  -scanparallel SCANPARALLEL
+                      Maximum scan jobs to run in parallel, 0 for standby
   -v, --verbose       Enable debug output
 ```
