@@ -34,13 +34,24 @@ pip install -r requirements.txt
 cd src  
 python agent.py -s -island *HOSTOFISLAND* -agentkey *XXXTHETOKENKEYXXXX* 
 
+Optional GMT scan window:
+```yaml
+scanhours: 14-16
+```
+
+Or from the command line:
+```bash
+python agent.py -s -scanhours 14-16
+```
+
 ### Execution
 python agent -d 
 
 ### Help
 ```bash
 $ ./agent.py --help
-usage: agent.py [-h] (-o | -d | -s) [-island ISLAND] [-agentkey AGENTKEY] [-ipext IPEXT] [-v]
+usage: agent.py [-h] (-o | -d | -s) [-island ISLAND] [-agentkey AGENTKEY] [-ipext IPEXT]
+                [-scanhours SCANHOURS] [-v]
 
 Plum Discovery Agent
 
@@ -52,5 +63,7 @@ options:
   -island ISLAND      Hostname or IP of the Plum Island controller
   -agentkey AGENTKEY  Agent Key
   -ipext IPEXT        Force External IP
+  -scanhours SCANHOURS
+                      GMT scan window in HH-HH format, example 14-16
   -v, --verbose       Enable debug output
 ```

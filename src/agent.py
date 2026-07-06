@@ -21,6 +21,7 @@ from utils.meta import print_meta
 from utils.mutils import run_elf
 from utils.setup import setup
 from utils.netutils import robust_request
+from utils.scanhours import is_scanhours_active
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -252,6 +253,17 @@ def scan():
     logger.debug("Message Received: %s", job.get("message"))
 
 
+def _scanhours_enabled():
+    """
+    Return True when agent may request jobs in the configured GMT window.
+    """
+    try:
+        return is_scanhours_active(CONFIG.get("scanhours"))
+    except ValueError as error:
+        logger.error("Invalid scanhours configuration: %s", error)
+        sys.exit(6)
+
+
 def loop(repeat):
     """
     Main Loop for Agent Execution
@@ -260,9 +272,16 @@ def loop(repeat):
     if repeat:
         logger.info("Starting to work endlessy")
         while True:
+            if not _scanhours_enabled():
+                logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
+                time.sleep(60)
+                continue
             scan()
     else:
         logger.info("Starting to work one time")
+        if not _scanhours_enabled():
+            logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
+            return
         scan()
 
 
@@ -279,6 +298,10 @@ if __name__ == "__main__":
     parser.add_argument("-island", help="Hostname or IP of the Plum Island controller")
     parser.add_argument("-agentkey", help="Agent Key")
     parser.add_argument("-ipext", help="Force External IP")
+    parser.add_argument(
+        "-scanhours",
+        help="GMT scan window in HH-HH format, example 14-16",
+    )
 
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable debug output"
