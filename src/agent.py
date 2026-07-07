@@ -374,12 +374,21 @@ def _run_daemon_loop(scanparallel):
     logger.info("Starting to work endlessly with scanparallel=%s", scanparallel)
     executor = ThreadPoolExecutor(max_workers=max_workers)
     running = {}
+    last_scanhours_standby_log = None
     try:
         while True:
             _drain_finished_jobs(running)
 
             if not _scanhours_enabled():
-                logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
+                now = time.monotonic()
+                if (
+                    last_scanhours_standby_log is None
+                    or now - last_scanhours_standby_log >= 3600
+                ):
+                    logger.info(
+                        "Outside scanhours %s GMT, standby", CONFIG.get("scanhours")
+                    )
+                    last_scanhours_standby_log = now
                 _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
                 continue
 
