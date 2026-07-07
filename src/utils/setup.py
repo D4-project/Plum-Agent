@@ -10,6 +10,7 @@ import yaml
 from utils.meta import get_bot_info
 from utils.mutils import locate_elf, Dict2obj
 from utils.netutils import get_ext_ip, robust_request
+from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel
 from utils.scanhours import normalize_scanhours
 
@@ -78,6 +79,14 @@ def setup(cfg, cmd_args):
             sys.exit(7)
         logger.info("Scan parallel jobs set to %s", cfg.get("scanparallel"))
         flag_setupchanged = True
+    if getattr(cmd_args, "logrotation", None) is not None:
+        try:
+            cfg["logrotation"] = parse_logrotation(cmd_args.logrotation)
+        except ValueError as error:
+            logger.error("Invalid logrotation: %s", error)
+            sys.exit(8)
+        logger.info("Log rotation retention set to %s days", cfg.get("logrotation"))
+        flag_setupchanged = True
     if getattr(cmd_args, "scanhours", None) is not None:
         try:
             normalized_scanhours = normalize_scanhours(cmd_args.scanhours)
@@ -105,6 +114,12 @@ def setup(cfg, cmd_args):
         except ValueError as error:
             logger.error("Invalid scanparallel: %s", error)
             sys.exit(7)
+    if cfg.get("logrotation") is not None:
+        try:
+            cfg["logrotation"] = parse_logrotation(cfg.get("logrotation"))
+        except ValueError as error:
+            logger.error("Invalid logrotation: %s", error)
+            sys.exit(8)
 
     if flag_setupchanged:
         logger.debug("Setup changed, saving it")

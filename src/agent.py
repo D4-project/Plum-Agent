@@ -17,12 +17,14 @@ import base64
 import hashlib
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timedelta
 from rich.logging import RichHandler
 from nmap2json import nmap_file_to_json
 from utils.meta import print_meta
 from utils.mutils import run_elf, terminate_running_elfs
 from utils.setup import setup
 from utils.netutils import robust_request
+from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel
 from utils.scanhours import is_scanhours_active
 
@@ -32,6 +34,64 @@ STANDBY_SLEEP = 60
 BACKOFF_START = 5
 BACKOFF_MAX = 60
 NSE_CACHE_LOCK = threading.Lock()
+
+
+class DailyLogFileHandler(logging.FileHandler):
+    """
+    Write logs to agent-YYMMDD.log and delete logs outside the retention window.
+    """
+
+    def __init__(self, directory, keep_days=30):
+        self.directory = directory
+        self.keep_days = keep_days
+        self.current_day = datetime.now().date()
+        os.makedirs(self.directory, exist_ok=True)
+        super().__init__(self._log_path(self.current_day), mode="a", encoding="utf-8")
+        self._cleanup_old_logs()
+
+    def _log_path(self, day):
+        return os.path.join(self.directory, f"agent-{day:%y%m%d}.log")
+
+    def _cleanup_old_logs(self):
+        cutoff = datetime.now().date() - timedelta(days=self.keep_days - 1)
+        for filename in os.listdir(self.directory):
+            if not filename.startswith("agent-") or not filename.endswith(".log"):
+                continue
+
+            date_part = filename[len("agent-") : -len(".log")]
+            try:
+                log_day = datetime.strptime(date_part, "%y%m%d").date()
+            except ValueError:
+                continue
+
+            if log_day < cutoff:
+                try:
+                    os.remove(os.path.join(self.directory, filename))
+                except OSError:
+                    continue
+
+    def _rollover_if_needed(self):
+        today = datetime.now().date()
+        if today == self.current_day:
+            return
+
+        self.current_day = today
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        self.baseFilename = os.path.abspath(self._log_path(today))
+        self.stream = self._open()
+        self._cleanup_old_logs()
+
+    def emit(self, record):
+        self._rollover_if_needed()
+        super().emit(record)
+
+    def set_keep_days(self, keep_days):
+        self.keep_days = keep_days
+        self._cleanup_old_logs()
+
 
 # Initiate loggers.
 logger = logging.getLogger("Plum_Agent")
@@ -43,8 +103,7 @@ console_handler.setLevel(logging.INFO)
 
 # File Handler (auto create folder)
 log_dir = os.path.join(THIS_DIR, "log")
-os.makedirs(log_dir, exist_ok=True)
-file_handler = logging.FileHandler(os.path.join(log_dir, "agent.log"), mode="a")
+file_handler = DailyLogFileHandler(log_dir, keep_days=30)
 file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
@@ -67,6 +126,10 @@ except FileNotFoundError:
     CONFIG = {}
 logger.debug("Loaded config: %s", CONFIG)
 CONFIG["THIS_DIR"] = THIS_DIR
+try:
+    file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
+except ValueError as error:
+    logger.error("Invalid logrotation configuration, using default: %s", error)
 
 
 def _nse_cache_dir():
@@ -486,6 +549,10 @@ if __name__ == "__main__":
         "-scanparallel",
         help="Maximum scan jobs to run in parallel, 0 for standby",
     )
+    parser.add_argument(
+        "-logrotation",
+        help="Daily log retention in days, default 30",
+    )
 
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable debug output"
@@ -526,6 +593,11 @@ if __name__ == "__main__":
         if args.daemon:
             CONFIG["daemon"] = True
         CONFIG = setup(CONFIG, args)  # Update config
+        try:
+            file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
+        except ValueError as error:
+            logger.error("Invalid logrotation configuration: %s", error)
+            sys.exit(8)
 
         if args.setup:
             sys.exit(0)  # Setup only

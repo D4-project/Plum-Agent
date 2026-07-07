@@ -54,6 +54,16 @@ Or from the command line:
 python agent.py -s -scanparallel 4
 ```
 
+Optional daily log retention:
+```yaml
+logrotation: 30
+```
+
+Or from the command line:
+```bash
+python agent.py -s -logrotation 30
+```
+
 ### Execution
 python agent -d 
 
@@ -61,7 +71,8 @@ python agent -d
 ```bash
 $ ./agent.py --help
 usage: agent.py [-h] (-o | -d | -s) [-island ISLAND] [-agentkey AGENTKEY] [-ipext IPEXT]
-                [-scanhours SCANHOURS] [-scanparallel SCANPARALLEL] [-v]
+                [-scanhours SCANHOURS] [-scanparallel SCANPARALLEL]
+                [-logrotation LOGROTATION] [-v]
 
 Plum Discovery Agent
 
@@ -77,5 +88,7 @@ options:
                       GMT scan window in HH-HH format, example 14-16
   -scanparallel SCANPARALLEL
                       Maximum scan jobs to run in parallel, 0 for standby
+  -logrotation LOGROTATION
+                      Daily log retention in days, default 30
   -v, --verbose       Enable debug output
 ```
