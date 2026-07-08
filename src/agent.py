@@ -300,7 +300,7 @@ def run_scan_job(job_message):
     output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
 
     run_args = [
-        "-T4",
+        "-T3",
         "--host-timeout",
         "40s",
         "--max-retries",
