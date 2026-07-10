@@ -35,7 +35,7 @@ def get_version():
             .strip()
         )
         return tag
-    except CalledProcessError:
+    except (CalledProcessError, OSError):
         try:
             sha = (
                 subprocess.check_output(
@@ -45,7 +45,7 @@ def get_version():
                 .strip()
             )
             return f"untagged-{sha}"
-        except CalledProcessError:
+        except (CalledProcessError, OSError):
             return "unknown"
 
 
