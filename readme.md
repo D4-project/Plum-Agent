@@ -64,6 +64,27 @@ Or from the command line:
 python agent.py -s -logrotation 30
 ```
 
+### Profile-level Nmap parameters
+
+Queued jobs may include optional `nmap_additional_params`, for example:
+
+```json
+{"nmap_additional_params": "--min-hostgroup 32 --host-timeout 5m"}
+```
+
+The agent tokenizes this string with shell-style quoting, then passes each token
+directly to Nmap as an argv item. It never invokes a shell. Values are limited to
+4096 characters. Shell-control syntax, the `--` option terminator, malformed
+quoting, and parameters that replace agent-managed ports, XML output, or NSE
+selection are rejected before Nmap starts.
+
+Profile values override matching agent defaults. Both `--option value` and
+`--option=value` forms are supported. Missing, `null`, and empty values retain the
+agent defaults, so jobs from older Plum-Island versions remain compatible. Removing
+the field from a profile rolls behavior back to those defaults. Updated
+Plum-Island responses remain compatible with older agents because the field is
+additive.
+
 ### Execution
 python agent -d 
 

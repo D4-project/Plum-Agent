@@ -9,15 +9,16 @@ import logging
 import os
 import argparse
 import sys
+import shlex
 import uuid
 import time
-import yaml
 import json
 import base64
 import hashlib
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
+import yaml
 from rich.logging import RichHandler
 from nmap2json import nmap_file_to_json
 from utils.meta import print_meta
@@ -34,6 +35,24 @@ STANDBY_SLEEP = 60
 BACKOFF_START = 5
 BACKOFF_MAX = 60
 NSE_CACHE_LOCK = threading.Lock()
+SHELL_CONTROL_CHARACTERS = frozenset(";&|<>`$()\r\n")
+MAX_NMAP_ADDITIONAL_PARAMS_LENGTH = 4096
+NMAP_DEFAULT_OPTIONS_WITH_VALUES = frozenset(
+    {"--host-timeout", "--max-retries", "--min-hostgroup"}
+)
+NMAP_RESERVED_LONG_OPTIONS = frozenset(
+    {
+        "--append-output",
+        "--exclude-ports",
+        "--no-stylesheet",
+        "--port-ratio",
+        "--resume",
+        "--script",
+        "--stylesheet",
+        "--top-ports",
+        "--webxml",
+    }
+)
 
 
 class DailyLogFileHandler(logging.FileHandler):
@@ -231,6 +250,134 @@ def _short_uid(value):
     return f"{value[:8]}...{value[-4:]}"
 
 
+def _nmap_option_name(token):
+    """
+    Return the option name used for duplicate and reserved-option checks.
+    """
+    if token.startswith("--"):
+        return token.split("=", 1)[0]
+    if len(token) == 3 and token.startswith("-T") and token[2].isdigit():
+        return "-T"
+    return token
+
+
+def _is_reserved_nmap_option(token):
+    """
+    Keep job ports, output, and selected NSE scripts under agent control.
+    """
+    if token in {"-", "--"}:
+        return True
+    option_name = _nmap_option_name(token)
+    if option_name in NMAP_RESERVED_LONG_OPTIONS:
+        return True
+    if token == "-p" or (token.startswith("-p") and not token.startswith("--")):
+        return True
+    return token.startswith(("-oA", "-oG", "-oN", "-oS", "-oX"))
+
+
+def _validate_nmap_param_text(value):
+    """
+    Reject bounded-string violations and shell-control syntax.
+    """
+    if len(value) > MAX_NMAP_ADDITIONAL_PARAMS_LENGTH:
+        raise ValueError("nmap_additional_params exceeds 4096 characters")
+    if any(character in SHELL_CONTROL_CHARACTERS for character in value):
+        raise ValueError("nmap_additional_params contains shell-control syntax")
+    if any(ord(character) < 32 and character != "\t" for character in value):
+        raise ValueError("nmap_additional_params contains control characters")
+
+
+def _validate_nmap_param_tokens(tokens):
+    """
+    Reject agent-managed options and malformed default overrides.
+    """
+    for index, token in enumerate(tokens):
+        if _is_reserved_nmap_option(token):
+            raise ValueError(f"Nmap option {token!r} is managed by the agent")
+
+        option_name = _nmap_option_name(token)
+        if option_name not in NMAP_DEFAULT_OPTIONS_WITH_VALUES:
+            continue
+        if "=" in token:
+            if not token.split("=", 1)[1]:
+                raise ValueError(f"Nmap option {option_name!r} requires a value")
+            continue
+        if index + 1 == len(tokens) or tokens[index + 1].startswith("-"):
+            raise ValueError(f"Nmap option {option_name!r} requires a value")
+
+
+def _parse_nmap_additional_params(value):
+    """
+    Parse controller-provided Nmap parameters without shell evaluation.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, str):
+        raise ValueError("nmap_additional_params must be a string or null")
+    _validate_nmap_param_text(value)
+    if not value.strip():
+        return []
+
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError as error:
+        raise ValueError(f"malformed nmap_additional_params: {error}") from error
+
+    _validate_nmap_param_tokens(tokens)
+    return tokens
+
+
+def _merge_nmap_defaults(default_args, additional_args):
+    """
+    Remove overridden agent defaults, then append profile-level arguments.
+    """
+    overrides = {_nmap_option_name(token) for token in additional_args}
+    merged_args = []
+    index = 0
+    while index < len(default_args):
+        token = default_args[index]
+        option_name = _nmap_option_name(token)
+        if option_name in overrides:
+            index += 2 if option_name in NMAP_DEFAULT_OPTIONS_WITH_VALUES else 1
+            continue
+        merged_args.append(token)
+        if option_name in NMAP_DEFAULT_OPTIONS_WITH_VALUES:
+            index += 1
+            merged_args.append(default_args[index])
+        index += 1
+
+    return merged_args + additional_args
+
+
+def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
+    """
+    Build Nmap argv while keeping agent-managed arguments authoritative.
+    """
+    additional_args = _parse_nmap_additional_params(
+        job_message.get("nmap_additional_params")
+    )
+    default_args = [
+        "-T3",
+        "--host-timeout",
+        "40s",
+        "--max-retries",
+        "2",
+        "--min-hostgroup",
+        "256",
+        "-Pn",
+    ]
+    run_args = _merge_nmap_defaults(default_args, additional_args)
+
+    if CONFIG.get("verbose"):
+        run_args.extend(["-v", "-script-trace"])
+
+    run_args.extend(["-p", nmap_ports, "-oX", output_xml, "--no-stylesheet"])
+    if nmap_nse_targets:
+        run_args.extend(["--script", ",".join(nmap_nse_targets)])
+    run_args.extend(job_message.get("job", "").split(","))
+    return [argument for argument in run_args if argument]
+
+
 def fetch_job():
     """
     Fetch one scan job from the controller.
@@ -283,47 +430,17 @@ def run_scan_job(job_message):
         return False
 
     nmap_ports = ",".join(str(i) for i in nmap_ports_list)
+    output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
     try:
         nmap_nse_targets = _resolve_nse_targets(job_message)
+        run_args = _build_nmap_args(
+            job_message, output_xml, nmap_ports, nmap_nse_targets
+        )
     except ValueError as error:
-        logger.error("Job %s cannot prepare NSE scripts: %s", job_uid, error)
+        logger.error("Job %s cannot prepare scan: %s", job_uid, error)
         return False
 
     logger.info("Job %s received target=%s", job_uid, range_toscan)
-
-    dbg_flag = ""
-    trace = ""
-    if CONFIG.get("verbose"):
-        dbg_flag = "-v"
-        trace = "-script-trace"
-
-    output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
-
-    run_args = [
-        "-T3",
-        "--host-timeout",
-        "40s",
-        "--max-retries",
-        "2",
-        "--min-hostgroup",
-        "256",
-        "-Pn",
-        "-p",
-        nmap_ports,
-        "-oX",
-        output_xml,
-        "--no-stylesheet",
-        dbg_flag,
-        trace,
-    ]
-    if nmap_nse_targets:
-        run_args.extend(["--script", ",".join(nmap_nse_targets)])
-
-    # Finally  Add the ranges to scan
-    for item in range_toscan.split(","):
-        run_args.append(item)
-
-    run_args = [arg for arg in run_args if arg]
     logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
     logger.info("Job %s scan started", job_uid)
     return_code = run_elf(CONFIG.get("nmap_path"), run_args)
