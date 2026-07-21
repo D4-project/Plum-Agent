@@ -74,6 +74,67 @@ class NmapAdditionalParamsTests(unittest.TestCase):
         self.assertEqual(self._option_value(arguments, "--script"), "tls-alpn.nse")
         self.assertEqual(arguments[-2:], ["example.test", "192.0.2.1"])
 
+    def test_command_formatter_shell_quotes_exact_argv(self):
+        """Logged command is a reversible representation of exact argv."""
+        command = agent._format_command_for_log(  # pylint: disable=protected-access
+            "/opt/Nmap Tools/nmap",
+            ["--script-args", "key=value one", "target name"],
+        )
+        self.assertEqual(
+            command,
+            "'/opt/Nmap Tools/nmap' --script-args 'key=value one' 'target name'",
+        )
+
+    def test_info_preview_truncates_and_debug_logs_full_command(self):
+        """INFO is bounded while DEBUG has exact final argv before execution."""
+        long_targets = ",".join(f"host-{index:03d}.example.test" for index in range(40))
+        job_message = {
+            "job": long_targets,
+            "job_uid": "f5813ec7-b36b-4fe7-b662-cca3d281725c",
+            "nmap_ports": [80, 443],
+            "nmap_nse": ["script path.nse"],
+            "nmap_additional_params": '--script-args "key=value one"',
+        }
+        messages_seen_at_execution = []
+        executed_args = []
+
+        with mock.patch.dict(
+            agent.CONFIG, {"nmap_path": "/opt/Nmap Tools/nmap"}, clear=False
+        ):
+            with self.assertLogs(agent.logger, level="DEBUG") as captured:
+
+                def fake_run_elf(executable, arguments):
+                    executed_args.extend([executable, *arguments])
+                    messages_seen_at_execution.extend(captured.output)
+                    return -1
+
+                with mock.patch.object(agent, "run_elf", side_effect=fake_run_elf):
+                    self.assertFalse(agent.run_scan_job(job_message))
+
+        full_command = (
+            agent._format_command_for_log(  # pylint: disable=protected-access
+                executed_args[0], executed_args[1:]
+            )
+        )
+        info_preview = (
+            agent._truncate_command_for_info_log(  # pylint: disable=protected-access
+                full_command
+            )
+        )
+        self.assertEqual(len(info_preview), agent.MAX_INFO_NMAP_COMMAND_LENGTH)
+        self.assertIn("... [truncated,", info_preview)
+        self.assertIn(
+            f"INFO:Plum_Agent:Job f5813ec7...725c Nmap command: {info_preview}",
+            messages_seen_at_execution,
+        )
+        self.assertIn(
+            f"DEBUG:Plum_Agent:Job f5813ec7...725c full Nmap command: {full_command}",
+            messages_seen_at_execution,
+        )
+        self.assertIn("--script-args 'key=value one'", full_command)
+        self.assertIn("--script 'script path.nse'", full_command)
+        self.assertTrue(full_command.endswith("host-039.example.test"))
+
     def test_shell_control_syntax_is_rejected(self):
         """Shell metacharacters and control syntax fail before execution."""
         unsafe_values = [

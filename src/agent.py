@@ -37,6 +37,7 @@ BACKOFF_MAX = 60
 NSE_CACHE_LOCK = threading.Lock()
 SHELL_CONTROL_CHARACTERS = frozenset(";&|<>`$()\r\n")
 MAX_NMAP_ADDITIONAL_PARAMS_LENGTH = 4096
+MAX_INFO_NMAP_COMMAND_LENGTH = 132
 NMAP_DEFAULT_OPTIONS_WITH_VALUES = frozenset(
     {"--host-timeout", "--max-retries", "--min-hostgroup"}
 )
@@ -378,6 +379,25 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     return [argument for argument in run_args if argument]
 
 
+def _format_command_for_log(executable, arguments):
+    """
+    Render the exact executable argv as a copy-paste-safe command line.
+    """
+    return shlex.join([executable, *arguments])
+
+
+def _truncate_command_for_info_log(command):
+    """
+    Bound the INFO command preview while reporting the original length.
+    """
+    if len(command) <= MAX_INFO_NMAP_COMMAND_LENGTH:
+        return command
+
+    suffix = f"... [truncated, {len(command)} chars total]"
+    prefix_length = MAX_INFO_NMAP_COMMAND_LENGTH - len(suffix)
+    return f"{command[:prefix_length]}{suffix}"
+
+
 def fetch_job():
     """
     Fetch one scan job from the controller.
@@ -441,7 +461,13 @@ def run_scan_job(job_message):
         return False
 
     logger.info("Job %s received target=%s", job_uid, range_toscan)
-    logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
+    full_command = _format_command_for_log(CONFIG.get("nmap_path"), run_args)
+    logger.info(
+        "Job %s Nmap command: %s",
+        job_uid,
+        _truncate_command_for_info_log(full_command),
+    )
+    logger.debug("Job %s full Nmap command: %s", job_uid, full_command)
     logger.info("Job %s scan started", job_uid)
     return_code = run_elf(CONFIG.get("nmap_path"), run_args)
     if return_code and return_code < 0:

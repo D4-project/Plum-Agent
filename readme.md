@@ -85,6 +85,22 @@ the field from a profile rolls behavior back to those defaults. Updated
 Plum-Island responses remain compatible with older agents because the field is
 additive.
 
+### Nmap command logging
+
+Before each scan starts, the agent logs a single `INFO` command preview capped at
+132 characters. Longer commands end with a truncation marker containing the full
+character count. With `-v/--verbose`, a separate `DEBUG` record contains the
+complete executable and final argv. Arguments use shell-safe quoting for
+reproduction, but the scan still executes the original argv list without invoking
+a shell. Both records include the shortened job UID so commands remain attributable
+during parallel scans.
+
+Command records are unredacted. Do not place passwords, tokens, or other secrets in
+Nmap arguments such as `--script-args`; `INFO` may expose their preview and
+`DEBUG` exposes the complete command. Restrict access to the log directory and
+configure `logrotation` to match the required retention period. Rolling back to a
+release before this feature removes both records without changing scan behavior.
+
 ### Execution
 python agent -d 
 
