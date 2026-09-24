@@ -1,4 +1,4 @@
-src/config/
+config.yaml
 src/log
 __pycache__
 .venv
