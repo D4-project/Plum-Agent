@@ -64,6 +64,18 @@ Or from the command line:
 python agent.py -s -logrotation 30
 ```
 
+Choose the output mode in `src/config/config.yaml`:
+```yaml
+debug: none
+```
+
+`none` (default) logs the scan target, start, and completion without Nmap output.
+`info` adds Nmap stdout/stderr and a shortened command preview. `debug` adds
+DEBUG diagnostics, the full command, and verbose Nmap output (`-v` and
+`-script-trace`). Use `-v` for info or `-vv` for debug on the command line;
+either overrides the YAML mode for that invocation. Existing `debug: false`
+and `debug: true` values still mean `none` and `debug` respectively.
+
 ### Profile-level Nmap parameters
 
 Queued jobs may include optional `nmap_additional_params`, for example:
@@ -87,9 +99,9 @@ additive.
 
 ### Nmap command logging
 
-Before each scan starts, the agent logs a single `INFO` command preview capped at
-132 characters. Longer commands end with a truncation marker containing the full
-character count. With `-v/--verbose`, a separate `DEBUG` record contains the
+In info and debug modes, before each scan starts, the agent logs an `INFO`
+command preview capped at 132 characters. Longer commands end with a truncation marker containing the full
+character count. When debug is enabled, a separate `DEBUG` record contains the
 complete executable and final argv. Arguments use shell-safe quoting for
 reproduction, but the scan still executes the original argv list without invoking
 a shell. Both records include the shortened job UID so commands remain attributable
@@ -127,5 +139,5 @@ options:
                       Maximum scan jobs to run in parallel, 0 for standby
   -logrotation LOGROTATION
                       Daily log retention in days, default 30
-  -v, --verbose       Enable debug output
+  -v, --verbose       -v: info, -vv: debug (overrides config)
 ```

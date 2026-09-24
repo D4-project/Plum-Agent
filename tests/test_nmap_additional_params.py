@@ -99,11 +99,14 @@ class NmapAdditionalParamsTests(unittest.TestCase):
         executed_args = []
 
         with mock.patch.dict(
-            agent.CONFIG, {"nmap_path": "/opt/Nmap Tools/nmap"}, clear=False
+            agent.CONFIG,
+            {"nmap_path": "/opt/Nmap Tools/nmap", "debug_mode": "debug"},
+            clear=False,
         ):
             with self.assertLogs(agent.logger, level="DEBUG") as captured:
 
-                def fake_run_elf(executable, arguments):
+                def fake_run_elf(executable, arguments, show_output):
+                    self.assertTrue(show_output)
                     executed_args.extend([executable, *arguments])
                     messages_seen_at_execution.extend(captured.output)
                     return -1

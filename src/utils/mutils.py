@@ -100,11 +100,10 @@ def terminate_running_elfs(grace_period=5):
             _terminate_process(process, grace_period=grace_period)
 
 
-def run_elf(elfpath, options=None):
+def run_elf(elfpath, options=None, show_output=True):
     """
     This function execute and wait the end of the process.
-    It push log to the console.
-    Error as Error, text as Info
+    Drain both streams; optionally log stdout as INFO and stderr as ERROR.
     """
     cmd = [elfpath] + (options if options else [])  # squash empty strings.
 
@@ -122,17 +121,20 @@ def run_elf(elfpath, options=None):
 
     def reader(pipe, log_func, prefix=""):
         for line in iter(pipe.readline, ""):
-            log_func(f"{prefix}{line.strip()}")
+            if log_func:
+                log_func(f"{prefix}{line.strip()}")
         pipe.close()
 
     t_out = threading.Thread(
-        target=reader, args=(process.stdout, logger.info), daemon=True
+        target=reader,
+        args=(process.stdout, logger.info if show_output else None),
+        daemon=True,
     )
     t_err = threading.Thread(
         target=reader,
         args=(
             process.stderr,
-            logger.error,
+            logger.error if show_output else None,
         ),
         daemon=True,
     )

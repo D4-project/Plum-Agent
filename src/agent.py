@@ -38,6 +38,7 @@ NSE_CACHE_LOCK = threading.Lock()
 SHELL_CONTROL_CHARACTERS = frozenset(";&|<>`$()\r\n")
 MAX_NMAP_ADDITIONAL_PARAMS_LENGTH = 4096
 MAX_INFO_NMAP_COMMAND_LENGTH = 132
+DEBUG_MODES = ("none", "info", "debug")
 NMAP_DEFAULT_OPTIONS_WITH_VALUES = frozenset(
     {"--host-timeout", "--max-retries", "--min-hostgroup"}
 )
@@ -150,6 +151,21 @@ try:
     file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
 except ValueError as error:
     logger.error("Invalid logrotation configuration, using default: %s", error)
+
+
+def resolve_debug_mode(config_value, cli_verbosity=0):
+    """Select the CLI mode when supplied, otherwise parse the YAML setting."""
+    if cli_verbosity:
+        return DEBUG_MODES[min(cli_verbosity, 2)]
+    if config_value is None or config_value is False:
+        return "none"
+    if config_value is True:
+        return "debug"  # Existing boolean configurations remain valid.
+    if isinstance(config_value, str):
+        mode = config_value.strip().lower()
+        if mode in DEBUG_MODES:
+            return mode
+    raise ValueError("debug must be one of: none, info, debug")
 
 
 def _nse_cache_dir():
@@ -369,7 +385,7 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     ]
     run_args = _merge_nmap_defaults(default_args, additional_args)
 
-    if CONFIG.get("verbose"):
+    if CONFIG.get("debug_mode") == "debug":
         run_args.extend(["-v", "-script-trace"])
 
     run_args.extend(["-p", nmap_ports, "-oX", output_xml, "--no-stylesheet"])
@@ -460,16 +476,19 @@ def run_scan_job(job_message):
         logger.error("Job %s cannot prepare scan: %s", job_uid, error)
         return False
 
-    logger.info("Job %s received target=%s", job_uid, range_toscan)
     full_command = _format_command_for_log(CONFIG.get("nmap_path"), run_args)
-    logger.info(
-        "Job %s Nmap command: %s",
-        job_uid,
-        _truncate_command_for_info_log(full_command),
-    )
+    if CONFIG.get("debug_mode") in ("info", "debug"):
+        logger.info(
+            "Job %s Nmap command: %s",
+            job_uid,
+            _truncate_command_for_info_log(full_command),
+        )
     logger.debug("Job %s full Nmap command: %s", job_uid, full_command)
-    logger.info("Job %s scan started", job_uid)
-    return_code = run_elf(CONFIG.get("nmap_path"), run_args)
+    logger.info("Job %s scan started target=%s", job_uid, range_toscan)
+    return_code = run_elf(
+        CONFIG.get("nmap_path"), run_args,
+        show_output=CONFIG.get("debug_mode") in ("info", "debug"),
+    )
     if return_code and return_code < 0:
         logger.warning("Job %s scan interrupted", job_uid)
         return False
@@ -497,7 +516,7 @@ def run_scan_job(job_message):
         logger.error("Job %s result send failed", job_uid)
         return False
 
-    logger.info("Job %s scan completed", job_uid)
+    logger.info("Job %s scan completed target=%s", job_uid, range_toscan)
     return True
 
 
@@ -698,14 +717,17 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable debug output"
+        "-v", "--verbose", action="count", default=0,
+        help="-v: info, -vv: debug (overrides config)",
     )
 
     args = parser.parse_args()
 
-    # Set Verbosity if required, including requests
-    if args.verbose:
-        CONFIG["verbose"] = True
+    try:
+        CONFIG["debug_mode"] = resolve_debug_mode(CONFIG.get("debug"), args.verbose)
+    except ValueError as error:
+        parser.error(str(error))
+    if CONFIG["debug_mode"] == "debug":
         console_handler.setLevel(logging.DEBUG)
         file_handler.setLevel(logging.DEBUG)
 

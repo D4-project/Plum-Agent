@@ -36,7 +36,7 @@ def save_config(curr_config):
     # Never save some paramaters.
     svg_config = curr_config.copy()
     config_file = os.path.join(svg_config.get("THIS_DIR"), "config", "config.yaml")
-    for item in ["verbose", "curr_ip", "THIS_DIR", "APIPATH"]:
+    for item in ["verbose", "debug_mode", "curr_ip", "THIS_DIR", "APIPATH"]:
         svg_config.pop(item, None)
 
     with open(config_file, "w", encoding="utf-8") as of:
