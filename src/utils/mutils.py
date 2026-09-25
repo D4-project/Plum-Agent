@@ -17,14 +17,10 @@ _RUNNING_ELFS_LOCK = threading.Lock()
 
 def get_version():
     """
-    Retrieves the current version of the code based on git tags or commit hash.
-
-    Attempts to get the latest git tag. If no tag is found or the command fails,
-    it falls back to getting the short commit hash of the HEAD. If both attempts
-    fail, it returns "unknown".
+    Return the Git tag or commit hash, and stop clearly when Git is unavailable.
 
     Returns:
-        str: The git tag, a string in the format "untagged-<short_sha>", or "unknown".
+        str: The Git tag or "untagged-<short_sha>".
     """
     try:
         tag = (
@@ -35,7 +31,11 @@ def get_version():
             .strip()
         )
         return tag
-    except (CalledProcessError, OSError):
+    except OSError as error:
+        raise SystemExit(
+            "Git is required to run Plum Agent. Install Git and retry."
+        ) from error
+    except CalledProcessError:
         try:
             sha = (
                 subprocess.check_output(
@@ -45,8 +45,14 @@ def get_version():
                 .strip()
             )
             return f"untagged-{sha}"
-        except (CalledProcessError, OSError):
-            return "unknown"
+        except OSError as error:
+            raise SystemExit(
+                "Git is required to run Plum Agent. Install Git and retry."
+            ) from error
+        except CalledProcessError as error:
+            raise SystemExit(
+                "Cannot determine Plum Agent version. Run from a Git checkout."
+            ) from error
 
 
 def locate_elf(filename):
