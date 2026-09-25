@@ -15,6 +15,8 @@ This this tool is the working agent designed to work with Plum-Island
 
 ## Technical requirements
 Python 3.10 or >
+Git installed at runtime and a Git checkout, so the agent can report its tag or
+commit hash.
 
 ### Agent supported
 nmap
