@@ -9,20 +9,110 @@ import logging
 import os
 import argparse
 import sys
+import shlex
 import uuid
 import time
-import yaml
 import json
 import base64
 import hashlib
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timedelta
+import yaml
 from rich.logging import RichHandler
 from nmap2json import nmap_file_to_json
 from utils.meta import print_meta
-from utils.mutils import run_elf
+from utils.mutils import run_elf, terminate_running_elfs
 from utils.setup import setup
 from utils.netutils import robust_request
+from utils.logrotation import parse_logrotation
+from utils.scanparallel import parse_scanparallel
+from utils.scanhours import is_scanhours_active
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+NO_JOB_SLEEP = 30
+STANDBY_SLEEP = 60
+BACKOFF_START = 5
+BACKOFF_MAX = 60
+NSE_CACHE_LOCK = threading.Lock()
+SHELL_CONTROL_CHARACTERS = frozenset(";&|<>`$()\r\n")
+MAX_NMAP_ADDITIONAL_PARAMS_LENGTH = 4096
+MAX_INFO_NMAP_COMMAND_LENGTH = 132
+DEBUG_MODES = ("none", "info", "debug")
+NMAP_DEFAULT_OPTIONS_WITH_VALUES = frozenset(
+    {"--host-timeout", "--max-retries", "--min-hostgroup"}
+)
+NMAP_RESERVED_LONG_OPTIONS = frozenset(
+    {
+        "--append-output",
+        "--exclude-ports",
+        "--no-stylesheet",
+        "--port-ratio",
+        "--resume",
+        "--script",
+        "--stylesheet",
+        "--top-ports",
+        "--webxml",
+    }
+)
+
+
+class DailyLogFileHandler(logging.FileHandler):
+    """
+    Write logs to agent-YYMMDD.log and delete logs outside the retention window.
+    """
+
+    def __init__(self, directory, keep_days=30):
+        self.directory = directory
+        self.keep_days = keep_days
+        self.current_day = datetime.now().date()
+        os.makedirs(self.directory, exist_ok=True)
+        super().__init__(self._log_path(self.current_day), mode="a", encoding="utf-8")
+        self._cleanup_old_logs()
+
+    def _log_path(self, day):
+        return os.path.join(self.directory, f"agent-{day:%y%m%d}.log")
+
+    def _cleanup_old_logs(self):
+        cutoff = datetime.now().date() - timedelta(days=self.keep_days - 1)
+        for filename in os.listdir(self.directory):
+            if not filename.startswith("agent-") or not filename.endswith(".log"):
+                continue
+
+            date_part = filename[len("agent-") : -len(".log")]
+            try:
+                log_day = datetime.strptime(date_part, "%y%m%d").date()
+            except ValueError:
+                continue
+
+            if log_day < cutoff:
+                try:
+                    os.remove(os.path.join(self.directory, filename))
+                except OSError:
+                    continue
+
+    def _rollover_if_needed(self):
+        today = datetime.now().date()
+        if today == self.current_day:
+            return
+
+        self.current_day = today
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        self.baseFilename = os.path.abspath(self._log_path(today))
+        self.stream = self._open()
+        self._cleanup_old_logs()
+
+    def emit(self, record):
+        self._rollover_if_needed()
+        super().emit(record)
+
+    def set_keep_days(self, keep_days):
+        self.keep_days = keep_days
+        self._cleanup_old_logs()
+
 
 # Initiate loggers.
 logger = logging.getLogger("Plum_Agent")
@@ -34,8 +124,7 @@ console_handler.setLevel(logging.INFO)
 
 # File Handler (auto create folder)
 log_dir = os.path.join(THIS_DIR, "log")
-os.makedirs(log_dir, exist_ok=True)
-file_handler = logging.FileHandler(os.path.join(log_dir, "agent.log"), mode="a")
+file_handler = DailyLogFileHandler(log_dir, keep_days=30)
 file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
@@ -58,6 +147,25 @@ except FileNotFoundError:
     CONFIG = {}
 logger.debug("Loaded config: %s", CONFIG)
 CONFIG["THIS_DIR"] = THIS_DIR
+try:
+    file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
+except ValueError as error:
+    logger.error("Invalid logrotation configuration, using default: %s", error)
+
+
+def resolve_debug_mode(config_value, cli_verbosity=0):
+    """Select the CLI mode when supplied, otherwise parse the YAML setting."""
+    if cli_verbosity:
+        return DEBUG_MODES[min(cli_verbosity, 2)]
+    if config_value is None or config_value is False:
+        return "none"
+    if config_value is True:
+        return "debug"  # Existing boolean configurations remain valid.
+    if isinstance(config_value, str):
+        mode = config_value.strip().lower()
+        if mode in DEBUG_MODES:
+            return mode
+    raise ValueError("debug must be one of: none, info, debug")
 
 
 def _nse_cache_dir():
@@ -91,15 +199,16 @@ def _collect_nse_hashes():
     """
     Return the local NSE cache hashes keyed by filename.
     """
-    hashes = {}
-    cache_dir = _nse_cache_dir()
-    for entry in sorted(os.listdir(cache_dir)):
-        if not entry.endswith(".nse"):
-            continue
-        path = os.path.join(cache_dir, entry)
-        if os.path.isfile(path):
-            hashes[entry] = _sha256_file(path)
-    return hashes
+    with NSE_CACHE_LOCK:
+        hashes = {}
+        cache_dir = _nse_cache_dir()
+        for entry in sorted(os.listdir(cache_dir)):
+            if not entry.endswith(".nse"):
+                continue
+            path = os.path.join(cache_dir, entry)
+            if os.path.isfile(path):
+                hashes[entry] = _sha256_file(path)
+        return hashes
 
 
 def _resolve_nse_targets(job_message):
@@ -112,44 +221,202 @@ def _resolve_nse_targets(job_message):
     if nse_descriptors is None:
         return job_message.get("nmap_nse") or []
 
-    cache_dir = _nse_cache_dir()
-    selected_paths = []
+    with NSE_CACHE_LOCK:
+        cache_dir = _nse_cache_dir()
+        selected_paths = []
 
-    for descriptor in nse_descriptors:
-        nse_name = _safe_nse_filename(descriptor.get("name"))
-        expected_hash = str(descriptor.get("hash", "")).strip().lower()
-        if not nse_name or not expected_hash:
-            raise ValueError("Invalid NSE descriptor received from controller")
+        for descriptor in nse_descriptors:
+            nse_name = _safe_nse_filename(descriptor.get("name"))
+            expected_hash = str(descriptor.get("hash", "")).strip().lower()
+            if not nse_name or not expected_hash:
+                raise ValueError("Invalid NSE descriptor received from controller")
 
-        nse_path = os.path.join(cache_dir, nse_name)
-        current_hash = _sha256_file(nse_path) if os.path.isfile(nse_path) else None
+            nse_path = os.path.join(cache_dir, nse_name)
+            current_hash = _sha256_file(nse_path) if os.path.isfile(nse_path) else None
 
-        if current_hash != expected_hash:
-            content_b64 = descriptor.get("content_b64")
-            if not content_b64:
-                raise ValueError(f"Missing updated NSE payload for {nse_name}")
+            if current_hash != expected_hash:
+                content_b64 = descriptor.get("content_b64")
+                if not content_b64:
+                    raise ValueError(f"Missing updated NSE payload for {nse_name}")
 
-            file_bytes = base64.b64decode(content_b64)
-            file_hash = hashlib.sha256(file_bytes).hexdigest()
-            if file_hash != expected_hash:
-                raise ValueError(f"Hash mismatch for {nse_name}")
+                file_bytes = base64.b64decode(content_b64)
+                file_hash = hashlib.sha256(file_bytes).hexdigest()
+                if file_hash != expected_hash:
+                    raise ValueError(f"Hash mismatch for {nse_name}")
 
-            tmp_path = f"{nse_path}.tmp"
-            with open(tmp_path, "wb") as handle:
-                handle.write(file_bytes)
-            os.replace(tmp_path, nse_path)
-            logger.info("NSE cache refresh: %s", nse_name)
-        else:
-            logger.info("NSE cache hit: %s", nse_name)
+                tmp_path = f"{nse_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp_path, "wb") as handle:
+                    handle.write(file_bytes)
+                os.replace(tmp_path, nse_path)
+                logger.info("NSE cache refresh: %s", nse_name)
+            else:
+                logger.info("NSE cache hit: %s", nse_name)
 
-        selected_paths.append(nse_path)
+            selected_paths.append(nse_path)
 
-    return selected_paths
+        return selected_paths
 
 
-def scan():
+def _short_uid(value):
     """
-    Do a Scan Job
+    Return a compact UID for readable logs.
+    """
+    value = str(value or "")
+    if len(value) <= 12:
+        return value
+    return f"{value[:8]}...{value[-4:]}"
+
+
+def _nmap_option_name(token):
+    """
+    Return the option name used for duplicate and reserved-option checks.
+    """
+    if token.startswith("--"):
+        return token.split("=", 1)[0]
+    if len(token) == 3 and token.startswith("-T") and token[2].isdigit():
+        return "-T"
+    return token
+
+
+def _is_reserved_nmap_option(token):
+    """
+    Keep job ports, output, and selected NSE scripts under agent control.
+    """
+    if token in {"-", "--"}:
+        return True
+    option_name = _nmap_option_name(token)
+    if option_name in NMAP_RESERVED_LONG_OPTIONS:
+        return True
+    if token == "-p" or (token.startswith("-p") and not token.startswith("--")):
+        return True
+    return token.startswith(("-oA", "-oG", "-oN", "-oS", "-oX"))
+
+
+def _validate_nmap_param_text(value):
+    """
+    Reject bounded-string violations and shell-control syntax.
+    """
+    if len(value) > MAX_NMAP_ADDITIONAL_PARAMS_LENGTH:
+        raise ValueError("nmap_additional_params exceeds 4096 characters")
+    if any(character in SHELL_CONTROL_CHARACTERS for character in value):
+        raise ValueError("nmap_additional_params contains shell-control syntax")
+    if any(ord(character) < 32 and character != "\t" for character in value):
+        raise ValueError("nmap_additional_params contains control characters")
+
+
+def _validate_nmap_param_tokens(tokens):
+    """
+    Reject agent-managed options and malformed default overrides.
+    """
+    for index, token in enumerate(tokens):
+        if _is_reserved_nmap_option(token):
+            raise ValueError(f"Nmap option {token!r} is managed by the agent")
+
+        option_name = _nmap_option_name(token)
+        if option_name not in NMAP_DEFAULT_OPTIONS_WITH_VALUES:
+            continue
+        if "=" in token:
+            if not token.split("=", 1)[1]:
+                raise ValueError(f"Nmap option {option_name!r} requires a value")
+            continue
+        if index + 1 == len(tokens) or tokens[index + 1].startswith("-"):
+            raise ValueError(f"Nmap option {option_name!r} requires a value")
+
+
+def _parse_nmap_additional_params(value):
+    """
+    Parse controller-provided Nmap parameters without shell evaluation.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, str):
+        raise ValueError("nmap_additional_params must be a string or null")
+    _validate_nmap_param_text(value)
+    if not value.strip():
+        return []
+
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError as error:
+        raise ValueError(f"malformed nmap_additional_params: {error}") from error
+
+    _validate_nmap_param_tokens(tokens)
+    return tokens
+
+
+def _merge_nmap_defaults(default_args, additional_args):
+    """
+    Remove overridden agent defaults, then append profile-level arguments.
+    """
+    overrides = {_nmap_option_name(token) for token in additional_args}
+    merged_args = []
+    index = 0
+    while index < len(default_args):
+        token = default_args[index]
+        option_name = _nmap_option_name(token)
+        if option_name in overrides:
+            index += 2 if option_name in NMAP_DEFAULT_OPTIONS_WITH_VALUES else 1
+            continue
+        merged_args.append(token)
+        if option_name in NMAP_DEFAULT_OPTIONS_WITH_VALUES:
+            index += 1
+            merged_args.append(default_args[index])
+        index += 1
+
+    return merged_args + additional_args
+
+
+def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
+    """
+    Build Nmap argv while keeping agent-managed arguments authoritative.
+    """
+    additional_args = _parse_nmap_additional_params(
+        job_message.get("nmap_additional_params")
+    )
+    default_args = [
+        "-T3",
+        "--host-timeout",
+        "40s",
+        "--max-retries",
+        "2",
+        "--min-hostgroup",
+        "256",
+        "-Pn",
+    ]
+    run_args = _merge_nmap_defaults(default_args, additional_args)
+
+    if CONFIG.get("debug_mode") == "debug":
+        run_args.extend(["-v", "-script-trace"])
+
+    run_args.extend(["-p", nmap_ports, "-oX", output_xml, "--no-stylesheet"])
+    if nmap_nse_targets:
+        run_args.extend(["--script", ",".join(nmap_nse_targets)])
+    run_args.extend(job_message.get("job", "").split(","))
+    return [argument for argument in run_args if argument]
+
+
+def _format_command_for_log(executable, arguments):
+    """
+    Render the exact executable argv as a copy-paste-safe command line.
+    """
+    return shlex.join([executable, *arguments])
+
+
+def _truncate_command_for_info_log(command):
+    """
+    Bound the INFO command preview while reporting the original length.
+    """
+    if len(command) <= MAX_INFO_NMAP_COMMAND_LENGTH:
+        return command
+
+    suffix = f"... [truncated, {len(command)} chars total]"
+    prefix_length = MAX_INFO_NMAP_COMMAND_LENGTH - len(suffix)
+    return f"{command[:prefix_length]}{suffix}"
+
+
+def fetch_job():
+    """
+    Fetch one scan job from the controller.
     """
 
     job_request = dict(CONFIG.get("botinfo") or {})
@@ -158,80 +425,75 @@ def scan():
         CONFIG.get("APIPATH").getjob,
         method="POST",
         data=job_request,
+        max_retries=1,
     )
-    if not job or "message" not in job:
-        logger.error("Invalid job response from controller")
-        return False
+    if job is None or "message" not in job:
+        raise RuntimeError("Invalid job response from controller")
 
     logger.debug("Message Received: %s", job.get("message"))
     job_message = job.get("message") or {}
+    if not isinstance(job_message, dict):
+        raise RuntimeError("Invalid job message from controller")
 
     # Validate JOB
-    range_toscan = job_message.get("job", "")
+    range_toscan = job_message.get("job") or ""
     if len(range_toscan) == 0:
         logger.info("No Job to process")
-        if CONFIG.get("daemon"):
-            logger.info("Sleeping 30'")
-            time.sleep(30)
-        return False
+        return None
+
+    return job_message
+
+
+def run_scan_job(job_message):
+    """
+    Run one scan job already fetched from the controller.
+    """
+
+    range_toscan = job_message.get("job") or ""
 
     # Validate the  UID
     range_uid = job_message.get("job_uid")
+    job_uid = _short_uid(range_uid)
     try:
         uuid.UUID(str(range_uid))
     except ValueError:
-        logger.error("Invalid UID format")
+        logger.error("Job %s invalid UID format", job_uid)
         return False
 
     nmap_ports_list = job_message.get("nmap_ports") or []
     if not nmap_ports_list:
-        logger.error("Job UID %s has no port definition", range_uid)
+        logger.error("Job %s has no port definition", job_uid)
         return False
 
     nmap_ports = ",".join(str(i) for i in nmap_ports_list)
+    output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
     try:
         nmap_nse_targets = _resolve_nse_targets(job_message)
+        run_args = _build_nmap_args(
+            job_message, output_xml, nmap_ports, nmap_nse_targets
+        )
     except ValueError as error:
-        logger.error("Cannot prepare NSE scripts for job %s: %s", range_uid, error)
+        logger.error("Job %s cannot prepare scan: %s", job_uid, error)
         return False
 
-    logger.info("Job UID %s Received, Target is %s", range_toscan, range_uid)
-
-    dbg_flag = ""
-    trace = ""
-    if CONFIG.get("verbose"):
-        dbg_flag = "-v"
-        trace = "-script-trace"
-
-    output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
-
-    run_args = [
-        "-T4",
-        "--host-timeout",
-        "40s",
-        "--max-retries",
-        "2",
-        "--min-hostgroup",
-        "256",
-        "-Pn",
-        "-p",
-        nmap_ports,
-        "-oX",
-        output_xml,
-        "--no-stylesheet",
-        dbg_flag,
-        trace,
-    ]
-    if nmap_nse_targets:
-        run_args.extend(["--script", ",".join(nmap_nse_targets)])
-
-    # Finally  Add the ranges to scan
-    for item in range_toscan.split(","):
-        run_args.append(item)
-
-    run_args = [arg for arg in run_args if arg]
-    logger.debug("Executing %s %s", CONFIG.get("nmap_path"), run_args)
-    run_elf(CONFIG.get("nmap_path"), run_args)
+    full_command = _format_command_for_log(CONFIG.get("nmap_path"), run_args)
+    if CONFIG.get("debug_mode") in ("info", "debug"):
+        logger.info(
+            "Job %s Nmap command: %s",
+            job_uid,
+            _truncate_command_for_info_log(full_command),
+        )
+    logger.debug("Job %s full Nmap command: %s", job_uid, full_command)
+    logger.info("Job %s scan started target=%s", job_uid, range_toscan)
+    return_code = run_elf(
+        CONFIG.get("nmap_path"), run_args,
+        show_output=CONFIG.get("debug_mode") in ("info", "debug"),
+    )
+    if return_code and return_code < 0:
+        logger.warning("Job %s scan interrupted", job_uid)
+        return False
+    if return_code:
+        logger.error("Job %s scan process exited with code %s", job_uid, return_code)
 
     results = {}
     # fetching report.
@@ -239,17 +501,172 @@ def scan():
         results = nmap_file_to_json(output_xml, True, True)
         os.remove(output_xml)
     else:
-        logger.error("No Scan output file")
+        logger.error("Job %s no scan output file", job_uid)
 
     data = dict(CONFIG.get("botinfo") or {})
     data = data | {"JOB_UID": str(range_uid), "RESULT": json.dumps(results)}
 
-    robust_request(
+    result_response = robust_request(
         CONFIG.get("APIPATH").sndjob,
         method="POST",
         data=data,
+        max_retries=3,
     )
-    logger.debug("Message Received: %s", job.get("message"))
+    if result_response is None:
+        logger.error("Job %s result send failed", job_uid)
+        return False
+
+    logger.info("Job %s scan completed target=%s", job_uid, range_toscan)
+    return True
+
+
+def scan():
+    """
+    Do one scan job.
+    """
+    try:
+        job_message = fetch_job()
+    except RuntimeError as error:
+        logger.error("%s", error)
+        return False
+
+    if not job_message:
+        if CONFIG.get("daemon"):
+            logger.info("Sleeping %ss", NO_JOB_SLEEP)
+            time.sleep(NO_JOB_SLEEP)
+        return False
+
+    return run_scan_job(job_message)
+
+
+def _scanhours_enabled():
+    """
+    Return True when agent may request jobs in the configured GMT window.
+    """
+    try:
+        return is_scanhours_active(CONFIG.get("scanhours"))
+    except ValueError as error:
+        logger.error("Invalid scanhours configuration: %s", error)
+        sys.exit(6)
+
+
+def _scanparallel_value():
+    """
+    Return configured scan parallelism.
+    """
+    try:
+        return parse_scanparallel(CONFIG.get("scanparallel"))
+    except ValueError as error:
+        logger.error("Invalid scanparallel configuration: %s", error)
+        sys.exit(7)
+
+
+def _drain_finished_jobs(running, finished=None):
+    """
+    Remove completed worker futures and log failures.
+    """
+    if finished is None:
+        finished = [future for future in running if future.done()]
+
+    for future in finished:
+        job_uid = running.pop(future, "unknown")
+        try:
+            if not future.result():
+                logger.error("Job %s failed", job_uid)
+        except Exception:
+            logger.exception("Job %s worker failed", job_uid)
+
+
+def _wait_for_worker_or_sleep(running, delay):
+    """
+    Sleep until a worker finishes or until delay expires.
+    """
+    if not running:
+        time.sleep(delay)
+        return
+
+    finished, _ = wait(set(running), timeout=delay, return_when=FIRST_COMPLETED)
+    _drain_finished_jobs(running, finished)
+
+
+def _run_daemon_loop(scanparallel):
+    """
+    Run daemon scheduler with bounded scan parallelism.
+    """
+    backoff_delay = BACKOFF_START
+    max_workers = max(scanparallel, 1)
+
+    logger.info("Starting to work endlessly with scanparallel=%s", scanparallel)
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    running = {}
+    last_scanhours_standby_log = None
+    try:
+        while True:
+            _drain_finished_jobs(running)
+
+            if not _scanhours_enabled():
+                now = time.monotonic()
+                if (
+                    last_scanhours_standby_log is None
+                    or now - last_scanhours_standby_log >= 3600
+                ):
+                    logger.info(
+                        "Outside scanhours %s GMT, standby", CONFIG.get("scanhours")
+                    )
+                    last_scanhours_standby_log = now
+                _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
+                continue
+
+            if scanparallel == 0:
+                logger.info("scanparallel is 0, standby")
+                _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
+                continue
+
+            if len(running) >= scanparallel:
+                _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
+                continue
+
+            no_job = False
+            controller_error = False
+
+            while len(running) < scanparallel:
+                try:
+                    job_message = fetch_job()
+                    backoff_delay = BACKOFF_START
+                except RuntimeError as error:
+                    logger.error("%s", error)
+                    controller_error = True
+                    break
+
+                if not job_message:
+                    no_job = True
+                    break
+
+                job_uid = _short_uid(job_message.get("job_uid"))
+                future = executor.submit(run_scan_job, job_message)
+                running[future] = job_uid
+                logger.info(
+                    "Job %s queued (%s/%s running)",
+                    job_uid,
+                    len(running),
+                    scanparallel,
+                )
+
+            if controller_error:
+                logger.info("Controller backoff %ss", backoff_delay)
+                _wait_for_worker_or_sleep(running, backoff_delay)
+                backoff_delay = min(backoff_delay * 2, BACKOFF_MAX)
+            elif no_job:
+                logger.info("Sleeping %ss", NO_JOB_SLEEP)
+                _wait_for_worker_or_sleep(running, NO_JOB_SLEEP)
+    except KeyboardInterrupt:
+        logger.warning("Stopping running scans")
+        terminate_running_elfs()
+        raise
+    finally:
+        if running:
+            terminate_running_elfs()
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def loop(repeat):
@@ -257,13 +674,20 @@ def loop(repeat):
     Main Loop for Agent Execution
     """
 
+    scanparallel = _scanparallel_value()
+
     if repeat:
-        logger.info("Starting to work endlessy")
-        while True:
-            scan()
-    else:
-        logger.info("Starting to work one time")
-        scan()
+        _run_daemon_loop(scanparallel)
+        return
+
+    logger.info("Starting to work one time")
+    if not _scanhours_enabled():
+        logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
+        return
+    if scanparallel == 0:
+        logger.info("scanparallel is 0, standby")
+        return
+    scan()
 
 
 if __name__ == "__main__":
@@ -279,16 +703,31 @@ if __name__ == "__main__":
     parser.add_argument("-island", help="Hostname or IP of the Plum Island controller")
     parser.add_argument("-agentkey", help="Agent Key")
     parser.add_argument("-ipext", help="Force External IP")
+    parser.add_argument(
+        "-scanhours",
+        help="GMT scan window in HH-HH format, example 14-16",
+    )
+    parser.add_argument(
+        "-scanparallel",
+        help="Maximum scan jobs to run in parallel, 0 for standby",
+    )
+    parser.add_argument(
+        "-logrotation",
+        help="Daily log retention in days, default 30",
+    )
 
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable debug output"
+        "-v", "--verbose", action="count", default=0,
+        help="-v: info, -vv: debug (overrides config)",
     )
 
     args = parser.parse_args()
 
-    # Set Verbosity if required, including requests
-    if args.verbose:
-        CONFIG["verbose"] = True
+    try:
+        CONFIG["debug_mode"] = resolve_debug_mode(CONFIG.get("debug"), args.verbose)
+    except ValueError as error:
+        parser.error(str(error))
+    if CONFIG["debug_mode"] == "debug":
         console_handler.setLevel(logging.DEBUG)
         file_handler.setLevel(logging.DEBUG)
 
@@ -319,6 +758,11 @@ if __name__ == "__main__":
         if args.daemon:
             CONFIG["daemon"] = True
         CONFIG = setup(CONFIG, args)  # Update config
+        try:
+            file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
+        except ValueError as error:
+            logger.error("Invalid logrotation configuration: %s", error)
+            sys.exit(8)
 
         if args.setup:
             sys.exit(0)  # Setup only
@@ -332,4 +776,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print()  # Flush screen
         logger.warning("Keyboard Interruption, Shutting down")
+        terminate_running_elfs()
         sys.exit(0)

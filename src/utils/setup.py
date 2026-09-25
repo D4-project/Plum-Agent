@@ -10,6 +10,9 @@ import yaml
 from utils.meta import get_bot_info
 from utils.mutils import locate_elf, Dict2obj
 from utils.netutils import get_ext_ip, robust_request
+from utils.logrotation import parse_logrotation
+from utils.scanparallel import parse_scanparallel
+from utils.scanhours import normalize_scanhours
 
 logger = logging.getLogger("Plum_Agent")
 
@@ -33,7 +36,7 @@ def save_config(curr_config):
     # Never save some paramaters.
     svg_config = curr_config.copy()
     config_file = os.path.join(svg_config.get("THIS_DIR"), "config", "config.yaml")
-    for item in ["verbose", "curr_ip", "THIS_DIR", "APIPATH"]:
+    for item in ["verbose", "debug_mode", "curr_ip", "THIS_DIR", "APIPATH"]:
         svg_config.pop(item, None)
 
     with open(config_file, "w", encoding="utf-8") as of:
@@ -68,6 +71,55 @@ def setup(cfg, cmd_args):
         cfg["ext_ip"] = cmd_args.ipext
         logger.debug("External IP manually set")
         flag_setupchanged = True
+    if getattr(cmd_args, "scanparallel", None) is not None:
+        try:
+            cfg["scanparallel"] = parse_scanparallel(cmd_args.scanparallel)
+        except ValueError as error:
+            logger.error("Invalid scanparallel: %s", error)
+            sys.exit(7)
+        logger.info("Scan parallel jobs set to %s", cfg.get("scanparallel"))
+        flag_setupchanged = True
+    if getattr(cmd_args, "logrotation", None) is not None:
+        try:
+            cfg["logrotation"] = parse_logrotation(cmd_args.logrotation)
+        except ValueError as error:
+            logger.error("Invalid logrotation: %s", error)
+            sys.exit(8)
+        logger.info("Log rotation retention set to %s days", cfg.get("logrotation"))
+        flag_setupchanged = True
+    if getattr(cmd_args, "scanhours", None) is not None:
+        try:
+            normalized_scanhours = normalize_scanhours(cmd_args.scanhours)
+        except ValueError as error:
+            logger.error("Invalid scanhours: %s", error)
+            sys.exit(6)
+
+        if normalized_scanhours is None:
+            cfg.pop("scanhours", None)
+            logger.info("Scan hours disabled")
+        else:
+            cfg["scanhours"] = normalized_scanhours
+            logger.info("Scan hours set to %s GMT", normalized_scanhours)
+        flag_setupchanged = True
+
+    if cfg.get("scanhours"):
+        try:
+            cfg["scanhours"] = normalize_scanhours(cfg.get("scanhours"))
+        except ValueError as error:
+            logger.error("Invalid scanhours: %s", error)
+            sys.exit(6)
+    if cfg.get("scanparallel") is not None:
+        try:
+            cfg["scanparallel"] = parse_scanparallel(cfg.get("scanparallel"))
+        except ValueError as error:
+            logger.error("Invalid scanparallel: %s", error)
+            sys.exit(7)
+    if cfg.get("logrotation") is not None:
+        try:
+            cfg["logrotation"] = parse_logrotation(cfg.get("logrotation"))
+        except ValueError as error:
+            logger.error("Invalid logrotation: %s", error)
+            sys.exit(8)
 
     if flag_setupchanged:
         logger.debug("Setup changed, saving it")

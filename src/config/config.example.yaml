@@ -1,0 +1,5 @@
+# Output: none = scan start/end only; info = Nmap output; debug = verbose Nmap.
+# CLI -v selects info, -vv selects debug; both override this setting.
+debug: none
+# debug: info
+# debug: debug
