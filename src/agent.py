@@ -6,8 +6,10 @@ Plum Agent Main code
 """
 
 import logging
+import html
 import os
 import argparse
+import re
 import sys
 import shlex
 import uuid
@@ -21,7 +23,7 @@ from datetime import datetime, timedelta
 import yaml
 from rich.logging import RichHandler
 from nmap2json import nmap_file_to_json
-from utils.meta import print_meta
+from utils.meta import APP_VERSION, print_meta
 from utils.mutils import run_elf, terminate_running_elfs
 from utils.setup import setup
 from utils.netutils import robust_request
@@ -267,6 +269,19 @@ def _short_uid(value):
     return f"{value[:8]}...{value[-4:]}"
 
 
+def _safe_debug_log_value(value):
+    """Bound and escape controller-derived values before DEBUG logging."""
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(value))
+    text = "".join(
+        character
+        for character in text
+        if ord(character) >= 32
+        and not 127 <= ord(character) <= 159
+        and character not in "\u2028\u2029"
+    )
+    return html.escape(text, quote=False)[:100]
+
+
 def _nmap_option_name(token):
     """
     Return the option name used for duplicate and reserved-option checks.
@@ -370,8 +385,27 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     """
     Build Nmap argv while keeping agent-managed arguments authoritative.
     """
-    additional_args = _parse_nmap_additional_params(
-        job_message.get("nmap_additional_params")
+    profile_present = "nmap_additional_params" in job_message
+    profile_value = job_message.get("nmap_additional_params")
+    job_uid = _short_uid(job_message.get("job_uid"))
+    logger.debug(
+        "Job %s agent_version=%s nmap_additional_params present=%s type=%s",
+        _safe_debug_log_value(job_uid),
+        _safe_debug_log_value(APP_VERSION),
+        profile_present,
+        type(profile_value).__name__ if profile_present else "missing",
+    )
+    additional_args = _parse_nmap_additional_params(profile_value)
+    logger.debug(
+        "Job %s nmap_additional_params option_names=%s",
+        _safe_debug_log_value(job_uid),
+        _safe_debug_log_value(
+            [
+                _nmap_option_name(token)
+                for token in additional_args
+                if token.startswith("-")
+            ]
+        ),
     )
     default_args = [
         "-T3",
@@ -434,6 +468,18 @@ def fetch_job():
     job_message = job.get("message") or {}
     if not isinstance(job_message, dict):
         raise RuntimeError("Invalid job message from controller")
+
+    profile_present = "nmap_additional_params" in job_message
+    logger.debug(
+        "Fetched job %s nmap_additional_params present=%s type=%s",
+        _safe_debug_log_value(_short_uid(job_message.get("job_uid"))),
+        profile_present,
+        (
+            type(job_message.get("nmap_additional_params")).__name__
+            if profile_present
+            else "missing"
+        ),
+    )
 
     # Validate JOB
     range_toscan = job_message.get("job") or ""

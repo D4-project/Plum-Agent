@@ -1,5 +1,6 @@
 # Release notes
 
+- Add DEBUG diagnostics for profile-field presence, type, option names, and agent version.
 - Require Git at startup to report the agent tag or commit hash, with a clear
   installation error when Git is missing.
 - Log a bounded Nmap command preview at `INFO` and the exact command at `DEBUG`.

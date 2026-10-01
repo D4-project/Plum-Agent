@@ -109,6 +109,12 @@ reproduction, but the scan still executes the original argv list without invokin
 a shell. Both records include the shortened job UID so commands remain attributable
 during parallel scans.
 
+When debug is enabled, troubleshooting diagnostics also report active
+`APP_VERSION`, whether `nmap_additional_params` reached the agent, its type,
+and parsed option names. Raw profile values are excluded from these diagnostics.
+A missing field means legacy defaults are expected; a present field with defaults
+still active indicates payload shape, queue, or deployment-version mismatch.
+
 Command records are unredacted. Do not place passwords, tokens, or other secrets in
 Nmap arguments such as `--script-args`; `INFO` may expose their preview and
 `DEBUG` exposes the complete command. Restrict access to the log directory and

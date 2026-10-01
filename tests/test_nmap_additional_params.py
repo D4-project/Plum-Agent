@@ -138,8 +138,43 @@ class NmapAdditionalParamsTests(unittest.TestCase):
         self.assertIn("--script 'script path.nse'", full_command)
         self.assertTrue(full_command.endswith("host-039.example.test"))
 
+    def test_debug_diagnostics_show_profile_shape_without_value(self):
+        """DEBUG diagnostics expose field shape and option names, not values."""
+        with self.assertLogs(agent.logger, level="DEBUG") as captured:
+            self._build_args("--min-hostgroup 32 --host-timeout 5m")
+
+        output = "\n".join(captured.output)
+        self.assertIn("nmap_additional_params present=True type=str", output)
+        self.assertIn(
+            "nmap_additional_params option_names=['--min-hostgroup', "
+            "'--host-timeout']",
+            output,
+        )
+        self.assertNotIn("32", output)
+        self.assertNotIn("5m", output)
+
+    def test_debug_diagnostics_escape_controller_text(self):
+        """Controller text cannot inject markup, lines, or terminal controls."""
+        job_message = {
+            "job": "example.test",
+            "job_uid": "<b>\n\u2028\x1b[31m",
+            "nmap_additional_params": "--" + "a" * 200,
+        }
+        with self.assertLogs(agent.logger, level="DEBUG") as captured:
+            agent._build_nmap_args(job_message, "/tmp/result.xml", "80", [])
+
+        output = "\n".join(captured.output)
+        self.assertIn("&lt;b&gt;", output)
+        self.assertNotIn("<b>", output)
+        self.assertNotIn("\x1b", output)
+        self.assertNotIn("\u2028", output)
+        option_message = next(
+            message for message in captured.output if "option_names=" in message
+        )
+        self.assertLessEqual(len(option_message.split("option_names=", 1)[1]), 100)
+
     def test_shell_control_syntax_is_rejected(self):
-        """Shell metacharacters and control syntax fail before execution."""
+        """Shell metacharacters and control syntax fail validation."""
         unsafe_values = [
             "-sV; id",
             "-sV && id",
