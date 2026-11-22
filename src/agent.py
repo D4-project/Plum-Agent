@@ -18,20 +18,31 @@ import json
 import base64
 import hashlib
 import threading
+import ipaddress
+import socket
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
+from importlib.metadata import PackageNotFoundError, version
+from inspect import signature
 import yaml
+from packaging.version import InvalidVersion, Version
 from rich.logging import RichHandler
-from nmap2json import nmap_file_to_json
 from utils.meta import APP_VERSION, print_meta
 from utils.mutils import run_elf, terminate_running_elfs
-from utils.setup import setup
+from utils.setup import parse_masscan_rate, setup
+from utils.scan_stats import masscan_targeted_ports, nmap_targeted_ports
 from utils.netutils import robust_request
 from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel
 from utils.scanhours import is_scanhours_active
 
+try:
+    from nmap2json import nmap_file_to_json
+except ImportError:
+    nmap_file_to_json = None
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+MIN_NMAP2JSON_VERSION = "2611.4"
 NO_JOB_SLEEP = 30
 STANDBY_SLEEP = 60
 BACKOFF_START = 5
@@ -147,12 +158,35 @@ try:
             CONFIG = {}  # In case of empty file
 except FileNotFoundError:
     CONFIG = {}
-logger.debug("Loaded config: %s", CONFIG)
 CONFIG["THIS_DIR"] = THIS_DIR
 try:
     file_handler.set_keep_days(parse_logrotation(CONFIG.get("logrotation")))
 except ValueError as error:
     logger.error("Invalid logrotation configuration, using default: %s", error)
+
+
+def _check_nmap2json():
+    """Verify the installed converter before registering with Island."""
+    try:
+        installed = version("nmap2json")
+    except PackageNotFoundError as error:
+        raise RuntimeError("nmap2json is not installed") from error
+    try:
+        installed_version = Version(installed)
+    except InvalidVersion as error:
+        raise RuntimeError(
+            f"nmap2json has invalid version metadata: {installed!r}"
+        ) from error
+    if installed_version < Version(MIN_NMAP2JSON_VERSION):
+        raise RuntimeError(f"nmap2json {installed} is too old")
+    try:
+        signature(nmap_file_to_json).bind(
+            "report.xml", True, True, hostname_resolver=None
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            f"nmap2json {installed} does not provide the required hostname conversion API"
+        ) from error
 
 
 def resolve_debug_mode(config_value, cli_verbosity=0):
@@ -429,6 +463,98 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     return [argument for argument in run_args if argument]
 
 
+def _resolve_masscan_targets(raw_targets, user_hostnames_by_ip=None):
+    """Resolve hostnames locally and return stable, distinct IP/CIDR targets."""
+    resolved = []
+    seen = set()
+    for raw_target in raw_targets.split(","):
+        target = raw_target.strip()
+        if not target:
+            continue
+        try:
+            network = ipaddress.ip_network(target, strict=False)
+            is_hostname = False
+            values = (
+                [target]
+                if network.version == 4 or CONFIG.get("masscan_ipv6", True)
+                else []
+            )
+        except ValueError:
+            is_hostname = True
+            try:
+                values = [
+                    item[4][0]
+                    for item in socket.getaddrinfo(
+                        target, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+                    )
+                    if ipaddress.ip_address(item[4][0]).version == 4
+                    or CONFIG.get("masscan_ipv6", True)
+                ]
+            except socket.gaierror as error:
+                raise ValueError(
+                    f"cannot resolve target {target!r}: {error}"
+                ) from error
+        for value in values:
+            if is_hostname and user_hostnames_by_ip is not None:
+                normalized_ip = str(ipaddress.ip_address(value))
+                user_hostnames_by_ip.setdefault(normalized_ip, set()).add(target)
+            if value not in seen:
+                seen.add(value)
+                resolved.append(value)
+    if not resolved:
+        raise ValueError("job has no resolvable target")
+    return resolved
+
+
+def _masscan_hostnames_for_open_ip(address, user_hostnames_by_ip):
+    """Attach requested names and PTR only for observed FQDN-derived IPs."""
+    try:
+        names = user_hostnames_by_ip.get(str(ipaddress.ip_address(address)), set())
+    except ValueError:
+        return []
+    if not names:
+        return []
+    hostnames = []
+    try:
+        ptr_name = socket.gethostbyaddr(address)[0]
+    except OSError:
+        ptr_name = None
+    if ptr_name:
+        hostnames.append({"name": ptr_name, "type": "PTR"})
+    hostnames.extend(
+        {"name": name, "type": "user"} for name in sorted(names, key=str.casefold)
+    )
+    return hostnames
+
+
+def _masscan_rate():
+    """Return a bounded positive packet rate from local configuration."""
+    return parse_masscan_rate(CONFIG.get("masscan_rate"))
+
+
+def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=None):
+    """Build shell-free Masscan argv from an Island job."""
+    arguments = _resolve_masscan_targets(
+        job_message.get("job") or "", user_hostnames_by_ip
+    )
+    if job_message.get("detect_protocol") is True:
+        source = CONFIG.get("masscan_ip")
+        if not source:
+            raise ValueError("Masscan banner detection requires masscan_ip")
+        source_version = ipaddress.ip_address(source).version
+        if any(
+            ipaddress.ip_network(target, strict=False).version != source_version
+            for target in arguments
+        ):
+            raise ValueError(
+                "Masscan banner targets must match the masscan_ip address family"
+            )
+        arguments.append("--banners")
+        arguments.extend(["--source-ip", source])
+    arguments.extend(["-p", ports, "--rate", str(_masscan_rate()), "-oX", output_xml])
+    return arguments
+
+
 def _format_command_for_log(executable, arguments):
     """
     Render the exact executable argv as a copy-paste-safe command line.
@@ -461,10 +587,10 @@ def fetch_job():
         data=job_request,
         max_retries=1,
     )
+    received_at = str(int(time.time()))
     if job is None or "message" not in job:
         raise RuntimeError("Invalid job response from controller")
 
-    logger.debug("Message Received: %s", job.get("message"))
     job_message = job.get("message") or {}
     if not isinstance(job_message, dict):
         raise RuntimeError("Invalid job message from controller")
@@ -487,7 +613,29 @@ def fetch_job():
         logger.info("No Job to process")
         return None
 
+    job_message["_received_at"] = received_at
     return job_message
+
+
+def _release_job(job_uid, attempt_uid=None):
+    """Return an interrupted or unusable job to the Island pool."""
+    endpoint = getattr(CONFIG.get("APIPATH"), "releasejob", None)
+    if not endpoint:
+        logger.error(
+            "Job %s cannot be released: missing controller endpoint",
+            _short_uid(job_uid),
+        )
+        return False
+    data = dict(CONFIG.get("botinfo") or {})
+    data["JOB_UID"] = str(job_uid)
+    if attempt_uid:
+        data["ATTEMPT_UID"] = str(attempt_uid)
+    response = robust_request(endpoint, method="POST", data=data, max_retries=3)
+    if response is None:
+        logger.error("Job %s release failed", _short_uid(job_uid))
+        return False
+    logger.info("Job %s returned to controller", _short_uid(job_uid))
+    return True
 
 
 def run_scan_job(job_message):
@@ -499,6 +647,7 @@ def run_scan_job(job_message):
 
     # Validate the  UID
     range_uid = job_message.get("job_uid")
+    attempt_uid = job_message.get("attempt_uid")
     job_uid = _short_uid(range_uid)
     try:
         uuid.UUID(str(range_uid))
@@ -506,51 +655,129 @@ def run_scan_job(job_message):
         logger.error("Job %s invalid UID format", job_uid)
         return False
 
-    nmap_ports_list = job_message.get("nmap_ports") or []
-    if not nmap_ports_list:
+    scan_tool = str(job_message.get("scan_tool") or "nmap").lower()
+    if scan_tool not in {"nmap", "masscan"}:
+        logger.error("Job %s has unsupported scan tool %s", job_uid, scan_tool)
+        return False
+    if scan_tool not in CONFIG.get("capabilities", ["nmap"]):
+        logger.error("Job %s requires unavailable scan tool %s", job_uid, scan_tool)
+        return False
+
+    received_at = job_message.get("_received_at")
+    ports_list = job_message.get("scan_ports") or job_message.get("nmap_ports") or []
+    if not ports_list:
         logger.error("Job %s has no port definition", job_uid)
         return False
 
-    nmap_ports = ",".join(str(i) for i in nmap_ports_list)
+    ports = ",".join(str(i) for i in ports_list)
     output_xml = os.path.join(CONFIG.get("THIS_DIR"), f"{range_uid}.xml")
+    user_hostnames_by_ip = {}
+    ports_targeted = None
     try:
-        nmap_nse_targets = _resolve_nse_targets(job_message)
-        run_args = _build_nmap_args(
-            job_message, output_xml, nmap_ports, nmap_nse_targets
-        )
+        os.remove(output_xml)
+    except FileNotFoundError:
+        pass
+    try:
+        if scan_tool == "masscan":
+            executable = CONFIG.get("masscan_path")
+            run_args = _build_masscan_args(
+                job_message, output_xml, ports, user_hostnames_by_ip
+            )
+            if job_message.get("report_target_count") is True:
+                try:
+                    ports_targeted = masscan_targeted_ports(run_args, ports)
+                except (ValueError, TypeError):
+                    ports_targeted = None
+        else:
+            executable = CONFIG.get("nmap_path")
+            nmap_nse_targets = _resolve_nse_targets(job_message)
+            run_args = _build_nmap_args(
+                job_message, output_xml, ports, nmap_nse_targets
+            )
     except ValueError as error:
         logger.error("Job %s cannot prepare scan: %s", job_uid, error)
+        _release_job(range_uid, attempt_uid)
         return False
 
-    full_command = _format_command_for_log(CONFIG.get("nmap_path"), run_args)
+    full_command = _format_command_for_log(executable, run_args)
     if CONFIG.get("debug_mode") in ("info", "debug"):
         logger.info(
-            "Job %s Nmap command: %s",
+            "Job %s %s command: %s",
             job_uid,
+            scan_tool.capitalize(),
             _truncate_command_for_info_log(full_command),
         )
-    logger.debug("Job %s full Nmap command: %s", job_uid, full_command)
-    logger.info("Job %s scan started target=%s", job_uid, range_toscan)
+    logger.debug(
+        "Job %s full %s command: %s", job_uid, scan_tool.capitalize(), full_command
+    )
+    logger.info("Job %s %s scan started target=%s", job_uid, scan_tool, range_toscan)
     return_code = run_elf(
-        CONFIG.get("nmap_path"), run_args,
+        executable,
+        run_args,
         show_output=CONFIG.get("debug_mode") in ("info", "debug"),
     )
     if return_code and return_code < 0:
         logger.warning("Job %s scan interrupted", job_uid)
+        _release_job(range_uid, attempt_uid)
         return False
     if return_code:
         logger.error("Job %s scan process exited with code %s", job_uid, return_code)
+        if scan_tool == "masscan":
+            try:
+                os.remove(output_xml)
+            except FileNotFoundError:
+                pass
+            _release_job(range_uid, attempt_uid)
+            return False
 
-    results = {}
+    results = [] if scan_tool == "masscan" else {}
     # fetching report.
     if os.path.isfile(output_xml):
-        results = nmap_file_to_json(output_xml, True, True)
-        os.remove(output_xml)
+        try:
+            if scan_tool == "nmap" or os.path.getsize(output_xml):
+                if scan_tool == "masscan":
+                    results = nmap_file_to_json(
+                        output_xml,
+                        True,
+                        True,
+                        hostname_resolver=lambda address: _masscan_hostnames_for_open_ip(
+                            address, user_hostnames_by_ip
+                        ),
+                    )
+                    if received_at is not None:
+                        for host in results:
+                            if host.get("starttime") is None:
+                                host["starttime"] = received_at
+                else:
+                    results = nmap_file_to_json(output_xml, True, True)
+                    if (
+                        job_message.get("report_target_count") is True
+                        and return_code == 0
+                    ):
+                        try:
+                            ports_targeted = nmap_targeted_ports(output_xml)
+                        except (ValueError, OSError, SyntaxError):
+                            ports_targeted = None
+        except (OSError, SyntaxError, ValueError) as error:
+            logger.error("Job %s invalid scan output: %s", job_uid, error)
+            _release_job(range_uid, attempt_uid)
+            return False
+        finally:
+            try:
+                os.remove(output_xml)
+            except FileNotFoundError:
+                pass
     else:
         logger.error("Job %s no scan output file", job_uid)
+        _release_job(range_uid, attempt_uid)
+        return False
 
     data = dict(CONFIG.get("botinfo") or {})
     data = data | {"JOB_UID": str(range_uid), "RESULT": json.dumps(results)}
+    if ports_targeted is not None and ports_targeted <= 10**12:
+        data["PORTS_TARGETED"] = ports_targeted
+    if attempt_uid:
+        data["ATTEMPT_UID"] = str(attempt_uid)
 
     result_response = robust_request(
         CONFIG.get("APIPATH").sndjob,
@@ -562,7 +789,7 @@ def run_scan_job(job_message):
         logger.error("Job %s result send failed", job_uid)
         return False
 
-    logger.info("Job %s scan completed target=%s", job_uid, range_toscan)
+    logger.info("Job %s %s scan completed target=%s", job_uid, scan_tool, range_toscan)
     return True
 
 
@@ -750,6 +977,12 @@ if __name__ == "__main__":
     parser.add_argument("-agentkey", help="Agent Key")
     parser.add_argument("-ipext", help="Force External IP")
     parser.add_argument(
+        "--masscan-ip",
+        "-masscan_ip",
+        dest="masscan_ip",
+        help="Dedicated Masscan banner source IP; use an empty value to clear",
+    )
+    parser.add_argument(
         "-scanhours",
         help="GMT scan window in HH-HH format, example 14-16",
     )
@@ -763,7 +996,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-v", "--verbose", action="count", default=0,
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
         help="-v: info, -vv: debug (overrides config)",
     )
 
@@ -797,7 +1033,17 @@ if __name__ == "__main__":
 
     # Start of application.
     print_meta()
-    logger.debug("Loaded config: %s", CONFIG)
+    try:
+        _check_nmap2json()
+    except RuntimeError as error:
+        logger.error(
+            "%s. Plum-Agent requires nmap2json >= %s. Install a compatible wheel "
+            "in this Python environment and restart Plum-Agent.",
+            error,
+            MIN_NMAP2JSON_VERSION,
+        )
+        sys.exit(1)
+    logger.debug("Configuration loaded")
 
     # Config and AutoSetup
     try:

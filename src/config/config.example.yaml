@@ -3,3 +3,15 @@
 debug: none
 # debug: info
 # debug: debug
+
+# Tools found on PATH are enabled automatically. Uncomment to disable one.
+# nmap_disabled: true
+# masscan_disabled: true
+
+# Maximum packets per second for Masscan. Default: 1000.
+# masscan_rate: 1000
+
+# To pause scanning with the current agent, uncomment this line.
+# scanparallel: 0
+# Dedicated unused source address on the scanner's network, outside kernel interfaces.
+# masscan_ip: 192.0.2.10

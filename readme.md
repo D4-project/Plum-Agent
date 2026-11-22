@@ -18,19 +18,76 @@ Python 3.10 or >
 Git installed at runtime and a Git checkout, so the agent can report its tag or
 commit hash.
 
-### Agent supported
-nmap
+### Supported scanners
+
+Configure the dedicated banner source with `python src/agent.py -s --masscan-ip ADDRESS`.
+Reserve an unused address on the local subnet outside the kernel's interfaces.
+The agent checks its format and local assignment. The operator must verify that
+the address is unused and reachable on the network. Restart the agent to announce
+it to Island. Clear it with `--masscan-ip ""`. Masscan uses `--source-ip` for banner
+jobs, which must use the same address family. Without this setting, the agent
+receives Masscan port checks only. No firewall configuration is required by Plum.
+
+Nmap and Masscan. At startup, the agent enables every supported executable found
+on `PATH` unless it is explicitly disabled in the configuration. It exits before
+requesting work when no scanner remains available.
+
+With an Island version that predates Masscan support, the agent uses Nmap only.
+Nmap must be installed and enabled in the agent configuration. Restart the agent
+after upgrading Island so it can detect the new scanner protocol.
 
 ## Installation
 Installation should stay simple.
 
 ### Setup
-sudo apt-get install nmap  
+sudo apt-get install nmap masscan
 git clone https://github.com/D4-project/Plum-Agent.git  
 cd Plum-Agent  
 python -m venv .venv  
 source .venv/bin/activate  
 pip install -r requirements.txt   
+
+Run the agent as a normal service account. Masscan needs raw-socket access on
+Linux; grant it to the executable instead of running the whole agent as root:
+
+```bash
+sudo setcap cap_net_raw=eip /usr/bin/masscan
+getcap /usr/bin/masscan
+```
+
+The agent verifies this at startup and prints the command for the executable it
+actually found when the capability is missing.
+
+### nmap2json dependency
+
+Plum-Agent and current Plum-Island require `nmap2json>=2611.4`. The agent checks
+this minimum version and the hostname conversion API before registering or
+requesting jobs. Version 2611.4 is published on PyPI. Install the requirements
+in the agent virtual environment:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip check
+```
+
+The 2611.2 GitHub wheel no longer meets this minimum. Preserve complete received
+banners; existing Nmap truncation cannot be reversed. Masscan's FTP parser removes
+carriage returns before producing XML; retain its output without adding bytes.
+Island derives the standard `banner` and observed `http-headers` fields for
+search and tagging. Volatile protocol clocks are masked only before hashing.
+Existing historical hashes are not migrated automatically.
+
+### Scan activity counters
+
+Updated Island job responses request `report_target_count: true`. The agent then
+reports `PORTS_TARGETED` with the completed result, including nonresponding targets.
+Masscan counts the union of its already resolved targets and requested TCP ports;
+Nmap uses the XML host total and scaninfo port counts. These are intended
+IP/transport/port pairs, not packet counts. No extra DNS lookup or scan is issued.
+Missing Nmap metadata or an unsuccessful Nmap exit leaves the count unknown.
+The optional field is omitted for older controllers, preserving compatibility.
+Restart the agent after updating its code. Older agents keep working with a new
+Island: completed jobs and open ports are counted, while targeted ports show unknown.
 
 ### Configuration
 cd src  
@@ -65,6 +122,27 @@ Or from the command line:
 ```bash
 python agent.py -s -logrotation 30
 ```
+
+Installed tools are enabled by default. Disable one without changing the agent
+identity or UID:
+
+```yaml
+nmap_disabled: true
+# masscan_disabled: true
+```
+
+Masscan defaults to 1,000 packets per second. The local operator may change the
+limit without changing profiles on Island:
+
+```yaml
+masscan_rate: 5000
+```
+
+With Masscan enabled, the agent resolves hostname jobs locally, scans every
+distinct returned address and converts Masscan XML through `nmap2json`. The
+profile's **Detect protocol** option adds `--banners`; without it, Masscan only
+reports port state. Interrupted jobs are returned to Island and restart from the
+beginning on the next compatible agent.
 
 Choose the output mode in `src/config/config.yaml`:
 ```yaml
@@ -149,3 +227,14 @@ options:
                       Daily log retention in days, default 30
   -v, --verbose       -v: info, -vv: debug (overrides config)
 ```
+
+Masscan host reports carry `"engine": "masscan"` through nmap2json 2611.4.
+Nmap output is unchanged. Island searches `engine:masscan` / `engine:nmap`;
+unmarked reports default to Nmap, without migrating or rewriting history.
+Engine provenance does not change deduplication hashes.
+
+Nmap is deliberately not marked because it is the historical default: explicitly
+marking it would require a backfill and redundant index memberships for millions
+of existing reports. Island searches Nmap as candidate UIDs minus marked Masscan
+UIDs, with no engine migration or history rewrite. Historical Masscan reports
+without a marker are also considered Nmap by this rule.

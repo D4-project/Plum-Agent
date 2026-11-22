@@ -6,15 +6,94 @@ import sys
 import logging
 import os
 import uuid
+import subprocess
+import ipaddress
+import json
 import yaml
 from utils.meta import get_bot_info
 from utils.mutils import locate_elf, Dict2obj
-from utils.netutils import get_ext_ip, robust_request
+from utils.netutils import EndpointUnavailable, get_ext_ip, robust_request
 from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel
 from utils.scanhours import normalize_scanhours
 
 logger = logging.getLogger("Plum_Agent")
+
+
+def validate_masscan_ip(value):
+    """Require a unicast source address outside the kernel's local addresses."""
+    if value in (None, ""):
+        return None
+    address = ipaddress.ip_address(value)
+    if (
+        address.is_unspecified
+        or address.is_multicast
+        or address.is_loopback
+        or address.is_link_local
+    ):
+        raise ValueError("masscan_ip must be a dedicated unicast address")
+    result = subprocess.run(
+        ["ip", "-j", "address", "show"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    for interface in json.loads(result.stdout):
+        for info in interface.get("addr_info", []):
+            if ipaddress.ip_address(info["local"]) == address:
+                raise ValueError(
+                    "masscan_ip must not be assigned to a kernel interface"
+                )
+    return str(address)
+
+
+def parse_masscan_rate(value):
+    """Validate the local packets-per-second limit."""
+    if value is None:
+        return 1000
+    if isinstance(value, bool):
+        raise ValueError("masscan_rate must be a positive integer")
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("masscan_rate must be a positive integer") from error
+    if value < 1:
+        raise ValueError("masscan_rate must be a positive integer")
+    return value
+
+
+def _masscan_has_raw_socket_access(path):
+    """Masscan may run as root or with CAP_NET_RAW in its effective set."""
+    if os.geteuid() == 0:
+        return True
+    try:
+        output = subprocess.run(
+            ["getcap", path],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    capability_text = output.partition(" ")[2].strip()
+    return "cap_net_raw" in capability_text and "e" in capability_text.partition("=")[2]
+
+
+def _masscan_supports_ipv6(path):
+    """Probe IPv6 target parsing without sending packets."""
+    try:
+        result = subprocess.run(
+            [path, "2001:db8::1", "-p80", "--echo"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 class APIPath:
@@ -24,9 +103,11 @@ class APIPath:
 
     def __init__(self, host):
         self.host = host.rstrip("/")  # remove trailing slash
+        self.protocol = f"{self.host}/bot_api/protocol"
         self.register = f"{self.host}/bot_api/beacon"
         self.getjob = f"{self.host}/bot_api/getjob"
         self.sndjob = f"{self.host}/bot_api/sndjob"
+        self.releasejob = f"{self.host}/bot_api/releasejob"
 
 
 def save_config(curr_config):
@@ -41,14 +122,26 @@ def save_config(curr_config):
 
     with open(config_file, "w", encoding="utf-8") as of:
         yaml.safe_dump(svg_config, of, default_flow_style=False, allow_unicode=True)
-    logger.debug("Saved configuration: %s", svg_config)
+    logger.debug("Configuration saved")
+
+
+def _supports_tool_inventory(endpoint):
+    """Use the legacy protocol only when its optional discovery route is absent."""
+    try:
+        info = robust_request(endpoint, max_retries=3, optional_endpoint=True)
+    except EndpointUnavailable:
+        return False
+    if not isinstance(info, dict) or info.get("tool_inventory") is not True:
+        logger.error("Could not determine the Island agent protocol")
+        sys.exit(5)
+    return True
 
 
 def setup(cfg, cmd_args):
     """
     Agent setup before execution
 
-    The setup will ensure that nmap is reachable,
+    The setup will ensure that an enabled Nmap is reachable,
     A UUID for this agent is generated.
     The host may reach Internet and retrieve the external IP
     The API Key and Island host is configured
@@ -56,18 +149,35 @@ def setup(cfg, cmd_args):
     TODO: Override external IP
     """
 
+    disabled = {}
+    for tool in ("nmap", "masscan"):
+        value = cfg.get(f"{tool}_disabled", False)
+        if not isinstance(value, bool):
+            logger.error("Invalid %s_disabled setting. Expected true or false.", tool)
+            sys.exit(1)
+        disabled[tool] = value
+
     flag_setupchanged = False
 
-    if cmd_args.island:
+    if getattr(cmd_args, "masscan_ip", None) is not None:
+        cfg["masscan_ip"] = cmd_args.masscan_ip
+        flag_setupchanged = True
+    try:
+        cfg["masscan_ip"] = validate_masscan_ip(cfg.get("masscan_ip"))
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        logger.error("Invalid masscan_ip: %s", error)
+        sys.exit(1)
+
+    if getattr(cmd_args, "island", None):
         cfg["island"] = cmd_args.island
         logger.info("PluM Island set to %s", cmd_args.island)
         flag_setupchanged = True
-    if cmd_args.agentkey:
+    if getattr(cmd_args, "agentkey", None):
         cfg["agent_key"] = cmd_args.agentkey
         logger.debug("API Key set")
         flag_setupchanged = True
 
-    if cmd_args.ipext:
+    if getattr(cmd_args, "ipext", None):
         cfg["ext_ip"] = cmd_args.ipext
         logger.debug("External IP manually set")
         flag_setupchanged = True
@@ -125,13 +235,76 @@ def setup(cfg, cmd_args):
         logger.debug("Setup changed, saving it")
         save_config(cfg)
 
+    if not cfg.get("agent_key"):
+        logger.error("Missing API Key, configure with -s -agentkey")
+        sys.exit(3)
+    if not cfg.get("island"):
+        logger.error("Missing Plum Island controller host, configure with -s -island")
+        sys.exit(4)
+
+    tools = ("nmap", "masscan")
+    tool_inventory = True
+    if not cmd_args.setup:
+        cfg["APIPATH"] = APIPath(cfg["island"])
+        tool_inventory = _supports_tool_inventory(cfg["APIPATH"].protocol)
+        if not tool_inventory:
+            logger.info(
+                "Legacy Island detected. Only Nmap is available for this session."
+            )
+            tools = ("nmap",)
+
     logger.info("Initialize Agent system")
-    present, nmap_path = locate_elf("nmap")
-    if not present:
-        logger.error("Nmap binary not found in path, please install it")
+    capabilities = []
+    for tool in ("nmap", "masscan"):
+        cfg.pop(f"{tool}_path", None)
+    cfg.pop("masscan_ipv6", None)
+    for tool in tools:
+        path_key = f"{tool}_path"
+        if disabled[tool]:
+            logger.info("%s disabled by configuration", tool.capitalize())
+            continue
+        present, path = locate_elf(tool)
+        if not present:
+            logger.info("%s not found on PATH", tool.capitalize())
+            continue
+        path = os.path.realpath(path)
+        if (
+            tool == "masscan"
+            and not cmd_args.setup
+            and not _masscan_has_raw_socket_access(path)
+        ):
+            logger.error(
+                "Masscan cannot open raw sockets. Run: sudo setcap cap_net_raw=eip %s",
+                path,
+            )
+            logger.error("Verify with: getcap %s, then restart Plum-Agent", path)
+            sys.exit(1)
+        cfg[path_key] = path
+        capabilities.append(tool)
+        logger.info("%s found in %s", tool.capitalize(), path)
+
+    cfg["capabilities"] = capabilities
+    if not capabilities and not cmd_args.setup:
+        if tool_inventory:
+            logger.error(
+                "No enabled scan tool available. Install Nmap or Masscan, or check disabled settings."
+            )
+        else:
+            logger.error(
+                "Legacy Island requires Nmap. Install and enable Nmap to continue."
+            )
         sys.exit(1)
-    logger.info("Nmap found in %s", nmap_path)
-    cfg["nmap_path"] = nmap_path
+    if "masscan" in capabilities:
+        try:
+            cfg["masscan_rate"] = parse_masscan_rate(cfg.get("masscan_rate"))
+        except ValueError as error:
+            logger.error("Invalid masscan_rate: %s", error)
+            sys.exit(1)
+        cfg["masscan_ipv6"] = _masscan_supports_ipv6(cfg["masscan_path"])
+        logger.info(
+            "Masscan IPv6 targets %s",
+            "supported" if cfg["masscan_ipv6"] else "not supported",
+        )
 
     # Retrieve or regenerate UUID of the agent
     if not cfg.get("uid"):
@@ -152,16 +325,6 @@ def setup(cfg, cmd_args):
             logger.error("External IP could not be determined")
             sys.exit(2)
 
-    # Check API Key
-    if not cfg.get("agent_key"):
-        logger.error("Missing API Key, configure with -s -agentkey")
-        sys.exit(3)
-
-    # Check Controller destination
-    if not cfg.get("island"):
-        logger.error("Missing Plum Island controller host, configure with -s -island")
-        sys.exit(4)
-
     # If config changed save it.
     if flag_setupchanged:
         save_config(cfg)
@@ -171,12 +334,15 @@ def setup(cfg, cmd_args):
         cfg["botinfo"] = get_bot_info(
             cfg.get("uid"), cfg.get("curr_ip")
         )  # Create BOT report infoblock
-        cfg["APIPATH"] = APIPath(cfg.get("island"))  # Setup PATHs
+        cfg["botinfo"]["AGENT_KEY"] = cfg["agent_key"]
         logger.info("Check if Island reachable")
         logger.debug("Validation address %s", cfg.get("APIPATH").register)
 
-        bot_report = cfg.get("botinfo")
-        bot_report["AGENT_KEY"] = cfg.get("agent_key")
+        bot_report = dict(cfg["botinfo"])
+        if tool_inventory:
+            bot_report["capabilities"] = list(capabilities)
+            if cfg.get("masscan_ip") and "masscan" in capabilities:
+                bot_report["masscan_ip"] = cfg["masscan_ip"]
         ready_msg = robust_request(
             cfg.get("APIPATH").register, method="POST", data=bot_report, max_retries=3
         )
@@ -189,5 +355,4 @@ def setup(cfg, cmd_args):
             logger.error("Island is not ready or bad host configured")
             sys.exit(5)
 
-        # End of Setup, Island is Reachable
-        return cfg
+    return cfg

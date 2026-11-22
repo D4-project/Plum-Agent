@@ -14,6 +14,10 @@ from requests.exceptions import Timeout, SSLError, RequestException
 logger = logging.getLogger("Plum_Agent")
 
 
+class EndpointUnavailable(Exception):
+    """The controller does not provide the requested optional endpoint."""
+
+
 def get_ext_ip():
     """
     Resolve the external (non-RFC1918) IP (v4 or v6) of the host
@@ -65,7 +69,14 @@ def get_ext_ip():
 
 
 def robust_request(
-    url, method="GET", headers=None, data=None, params=None, max_retries=None
+    url,
+    method="GET",
+    headers=None,
+    data=None,
+    params=None,
+    max_retries=None,
+    *,
+    optional_endpoint=False,
 ):
     """
     Perform GET or POST request on API
@@ -78,6 +89,7 @@ def robust_request(
     data: dict for POST
     params: dict for GET params
     max_retries: optional, None = infinite
+    optional_endpoint: raise EndpointUnavailable on HTTP 404 or 405 without retrying
 
     return dict or None if max retries reached
 
@@ -100,7 +112,6 @@ def robust_request(
                     url, headers=headers, params=params, timeout=timeout_wait
                 )
             else:
-                logger.debug("Data: %s", data)
                 response = requests.post(
                     url,
                     headers=headers,
@@ -108,7 +119,9 @@ def robust_request(
                     params=params,
                     timeout=timeout_wait,
                 )
-                logger.debug("Island Response: %s", response.text)
+                logger.debug("Island responded with HTTP %d", response.status_code)
+            if optional_endpoint and response.status_code in (404, 405):
+                raise EndpointUnavailable
             if response.status_code != 200:
                 logger.error("%s %s -> %s", method, url, response.status_code)
             else:

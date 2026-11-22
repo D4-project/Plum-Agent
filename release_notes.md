@@ -1,5 +1,30 @@
 # Release notes
 
+- Require nmap2json 2611.4: mark only Masscan reports with `engine: masscan`.
+  Nmap reports stay unchanged; engine metadata is excluded from content hashes.
+
+- Report optional targeted-port totals when Island requests them. Count Masscan
+  resolved target/port pairs and Nmap XML host/port metadata, including targets
+  with no response. Keep older Island submissions unchanged.
+
+- Require nmap2json 2611.3 for full received banners, consistent escapes and
+  volatile-date hash masking. This version is currently a local candidate.
+
+- Configure a dedicated Masscan banner source with --masscan-ip. Announce it at
+  startup, reject local kernel addresses, and require it for banner jobs.
+
+- Add Masscan execution with startup discovery, Linux raw-socket capability
+  checks, optional banner detection, local hostname resolution and Nmap-compatible
+  JSON conversion. Announce Nmap/Masscan capabilities so Island dispatches only
+  compatible jobs; existing UID and Nmap behavior remain unchanged.
+- Preserve requested FQDNs and available PTR names in Masscan JSON only for
+  resolved IPs with an open port. Skip PTR lookups for other resolved IPs.
+- Reject missing or incompatible nmap2json installations at startup before
+  registering the agent with Island.
+- Use the UTC job receipt time when a Masscan report has no host start time.
+- Use the legacy Nmap protocol on controllers that predate scanner capabilities.
+- Return interrupted jobs to Island for complete retry and report a successful
+  zero-byte Masscan result as an empty capture list.
 - Verify built-in daily log rotation and configurable retention (`logrotation`, issue #6).
 - Add DEBUG diagnostics for profile-field presence, type, option names, and agent version.
 - Require Git at startup to report the agent tag or commit hash, with a clear

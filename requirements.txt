@@ -2,5 +2,6 @@ rich
 PyYAML
 argparse
 requests
-nmap2json>=2610.01
+packaging
+nmap2json>=2611.4
 # rdpy3
