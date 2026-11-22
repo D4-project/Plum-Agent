@@ -70,7 +70,7 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-The 2611.2 GitHub wheel no longer meets this minimum. Preserve complete received
+Versions older than 2611.4 do not meet this minimum. Preserve complete received
 banners; existing Nmap truncation cannot be reversed. Masscan's FTP parser removes
 carriage returns before producing XML; retain its output without adding bytes.
 Island derives the standard `banner` and observed `http-headers` fields for

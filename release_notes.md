@@ -7,8 +7,8 @@
   resolved target/port pairs and Nmap XML host/port metadata, including targets
   with no response. Keep older Island submissions unchanged.
 
-- Require nmap2json 2611.3 for full received banners, consistent escapes and
-  volatile-date hash masking. This version is currently a local candidate.
+- Preserve full received banners, consistent escapes and volatile-date hash
+  masking through the published nmap2json 2611.4 dependency.
 
 - Configure a dedicated Masscan banner source with --masscan-ip. Announce it at
   startup, reject local kernel addresses, and require it for banner jobs.
