@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+src/log
+src/nse_cache
+src/config/config.yaml
+*.xml
+.env
