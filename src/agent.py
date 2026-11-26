@@ -205,7 +205,7 @@ def resolve_debug_mode(config_value, cli_verbosity=0):
 def configure_log_levels(mode, setup_mode=False):
     """Set agent/scanner verbosity and keep setup warnings visible."""
     level = {
-        "none": logging.ERROR,
+        "none": logging.INFO,
         "info": logging.INFO,
         "scanner": logging.INFO,
         "debug": logging.DEBUG,
@@ -213,7 +213,7 @@ def configure_log_levels(mode, setup_mode=False):
     if setup_mode:
         level = min(level, logging.WARNING)
     logger.setLevel(level)
-    scanner_logger.setLevel(logging.DEBUG if mode == "scanner" else logging.NOTSET)
+    scanner_logger.setLevel(logging.NOTSET)
 
 
 def _nse_cache_dir():
@@ -453,10 +453,10 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     run_args = _merge_nmap_defaults(default_args, additional_args)
 
     debug_mode = CONFIG.get("debug_mode")
-    if debug_mode in ("scanner", "debug"):
+    if debug_mode in ("info", "scanner", "debug"):
         run_args.append("-v")
     if debug_mode == "debug":
-        run_args.append("-script-trace")
+        run_args.extend(["-d", "--script-trace"])
 
     run_args.extend(["-p", nmap_ports, "-oX", output_xml, "--no-stylesheet"])
     if nmap_nse_targets:
@@ -561,6 +561,8 @@ def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=Non
             raise ValueError(f"masscan_ip_v{version} must be IPv{version}")
         arguments.append("--banners")
         arguments.extend(["--source-ip", source])
+    if CONFIG.get("debug_mode") == "debug":
+        arguments.append("-vv")
     arguments.extend(["-p", ports, "--rate", str(_masscan_rate()), "-oX", output_xml])
     return arguments
 
@@ -730,7 +732,7 @@ def run_scan_job(job_message):
         return_code = run_elf(
             executable,
             run_args,
-            show_output=CONFIG.get("debug_mode") in ("scanner", "debug"),
+            show_output=CONFIG.get("debug_mode") in ("info", "scanner", "debug"),
             job_uid=job_uid,
         )
     else:

@@ -167,7 +167,15 @@ def run_elf(elfpath, options=None, show_output=True, *, job_uid=None):
                 if stderr and not _SCANNER_STATUS.match(message):
                     diagnostics.append(message)
                 if show_output:
-                    scanner_logger.debug("%s", message)
+                    scanner_logger.log(
+                        (
+                            logging.DEBUG
+                            if scanner_logger.isEnabledFor(logging.DEBUG)
+                            else logging.INFO
+                        ),
+                        "%s",
+                        message,
+                    )
 
     t_out = threading.Thread(
         target=reader,

@@ -1,5 +1,8 @@
 # Release notes
 
+- Show INFO/WARNING/ERROR by default. `-v` displays scanner progress at INFO;
+  `-vv` enables agent debug, Nmap `-d --script-trace` and Masscan `-vv` output.
+
 - Repair malformed Masscan report IPv6 addresses ending in a single colon by
   appending `:0` in the agent before JSON conversion. Preserve valid addresses
   and retain rejected reports as `.xml.invalid` for diagnosis.

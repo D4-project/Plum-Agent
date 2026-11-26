@@ -175,10 +175,11 @@ Choose the output mode in `src/config/config.yaml`:
 debug: none
 ```
 
-`none` (default) logs errors only. `info` adds job summaries and a shortened
-command preview. `debug` adds scanner output, full commands, Nmap script traces
-and agent diagnostics. On the command line, `-v` shows agent status, errors and
-Nmap and Masscan process output. `-vv` enables full debug. Both options override the
+`none` (default) shows agent INFO, WARNING and ERROR messages, with scanner
+progress hidden. `info` / `-v` also shows Nmap and Masscan output at INFO level
+and enables Nmap verbosity (`-v`). `debug` / `-vv` adds agent DEBUG messages,
+Nmap debugging (`-d`, `--script-trace`) and Masscan verbosity (`-vv`), displaying
+scanner output at DEBUG level. Both CLI options override the
 YAML mode. Existing `debug: false` and `debug: true` values still select `none`
 and `debug` respectively.
 

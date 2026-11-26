@@ -33,7 +33,8 @@ class DebugModeTests(unittest.TestCase):
             agent.logger.warning("setup warning")
             agent.logger.error("setup error")
         self.assertEqual(
-            stream.getvalue().splitlines(), ["setup warning", "setup error"]
+            stream.getvalue().splitlines(),
+            ["setup info", "setup warning", "setup error"],
         )
 
     def test_cli_mode_overrides_yaml(self):
@@ -60,14 +61,13 @@ class DebugModeTests(unittest.TestCase):
         self.addCleanup(agent.logger.setLevel, agent.logger.level)
         self.addCleanup(mutils.scanner_logger.setLevel, mutils.scanner_logger.level)
         for mode, expected in (
-            ("none", ["agent error", "scanner error"]),
+            ("none", ["agent info", "agent error", "scanner warning", "scanner error"]),
             ("info", ["agent info", "agent error", "scanner warning", "scanner error"]),
             (
                 "scanner",
                 [
                     "agent info",
                     "agent error",
-                    "scanner debug",
                     "scanner warning",
                     "scanner error",
                 ],
@@ -124,7 +124,7 @@ class DebugModeTests(unittest.TestCase):
         self.assertFalse(runner.call_args.kwargs["show_output"])
         self.assertEqual(runner.call_args.kwargs["job_uid"], "f5813ec7...725c")
 
-    def test_info_shows_command_without_nmap_verbose_flags(self):
+    def test_info_shows_command_and_nmap_progress(self):
         job = {
             "job": "example.test",
             "job_uid": "f5813ec7-b36b-4fe7-b662-cca3d281725c",
@@ -139,9 +139,9 @@ class DebugModeTests(unittest.TestCase):
 
         self.assertIn("Nmap command:", "\n".join(captured.output))
         arguments = runner.call_args.args[1]
-        self.assertNotIn("-v", arguments)
-        self.assertNotIn("-script-trace", arguments)
-        self.assertFalse(runner.call_args.kwargs["show_output"])
+        self.assertIn("-v", arguments)
+        self.assertNotIn("--script-trace", arguments)
+        self.assertTrue(runner.call_args.kwargs["show_output"])
 
     def test_scanner_mode_streams_nmap_without_script_trace(self):
         job = {
@@ -159,7 +159,7 @@ class DebugModeTests(unittest.TestCase):
 
         self.assertTrue(runner.call_args.kwargs["show_output"])
         self.assertIn("-v", runner.call_args.args[1])
-        self.assertNotIn("-script-trace", runner.call_args.args[1])
+        self.assertNotIn("--script-trace", runner.call_args.args[1])
 
     def test_debug_adds_nmap_verbose_flags(self):
         job = {"job": "example.test"}
@@ -168,7 +168,31 @@ class DebugModeTests(unittest.TestCase):
                 job, "/tmp/result.xml", "80", []
             )
         self.assertIn("-v", arguments)
-        self.assertIn("-script-trace", arguments)
+        self.assertIn("--script-trace", arguments)
+        self.assertIn("-d", arguments)
+
+    def test_masscan_debug_flags_only_in_debug_mode(self):
+        for mode in ("none", "info", "scanner", "debug"):
+            with self.subTest(mode=mode), mock.patch.dict(
+                agent.CONFIG, {"debug_mode": mode}
+            ):
+                arguments = agent._build_masscan_args(
+                    {"job": "192.0.2.1", "scan_family": "ipv4"}, "/tmp/result.xml", "80"
+                )
+                self.assertEqual("-vv" in arguments, mode == "debug")
+
+    def test_scanner_progress_uses_info_with_single_v(self):
+        self.addCleanup(agent.logger.setLevel, agent.logger.level)
+        self.addCleanup(mutils.scanner_logger.setLevel, mutils.scanner_logger.level)
+        agent.configure_log_levels("scanner")
+        with self.assertLogs(mutils.scanner_logger, level="INFO") as captured:
+            self.assertEqual(
+                mutils.run_elf(sys.executable, ["-c", "print('scan progress')"]), 0
+            )
+        self.assertEqual(
+            [(r.levelname, r.getMessage()) for r in captured.records],
+            [("INFO", "scan progress")],
+        )
 
     def test_process_output_is_drained_and_only_logged_when_enabled(self):
         script = (
