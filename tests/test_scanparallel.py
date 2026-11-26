@@ -10,10 +10,71 @@ from unittest.mock import patch, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent
 from utils import setup
-from utils.scanparallel import scanner_parallel_limits
+from utils.scanparallel import scanner_parallel_limits, active_scanner_limits
 
 
 class ParallelTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch.dict(
+                agent.CONFIG,
+                {
+                    "capabilities": ["nmap", "masscan"],
+                    "nmap_disabled": False,
+                    "masscan_disabled": False,
+                },
+            )
+        )
+
+    def test_active_limits_exclude_disabled_or_unavailable_scanners(self):
+        config = {
+            "scanparallel": 4,
+            "masscan_scanparallel": 8,
+            "capabilities": ["nmap", "masscan"],
+        }
+        self.assertEqual(
+            active_scanner_limits({**config, "nmap_disabled": True}),
+            {"nmap": 0, "masscan": 8},
+        )
+        self.assertEqual(
+            active_scanner_limits({**config, "capabilities": ["masscan"]}),
+            {"nmap": 0, "masscan": 8},
+        )
+        self.assertEqual(
+            active_scanner_limits({**config, "masscan_disabled": True}),
+            {"nmap": 4, "masscan": 0},
+        )
+        self.assertEqual(
+            active_scanner_limits({**config, "capabilities": []}),
+            {"nmap": 0, "masscan": 0},
+        )
+
+    def test_queue_capacity_counts_only_enabled_scanner(self):
+        jobs = [dict(job_uid=str(i), scan_tool="masscan") for i in range(8)]
+        executor = Mock()
+        executor.submit.side_effect = lambda *_args: Future()
+        with (
+            patch.dict(
+                agent.CONFIG,
+                {"scanparallel": 4, "masscan_scanparallel": 8, "nmap_disabled": True},
+            ),
+            patch.object(agent, "ThreadPoolExecutor", return_value=executor) as pool,
+            patch.object(agent, "_scanhours_enabled", return_value=True),
+            patch.object(agent, "fetch_job", side_effect=jobs) as fetch,
+            patch.object(
+                agent, "_wait_for_worker_or_sleep", side_effect=KeyboardInterrupt
+            ),
+            patch.object(agent, "terminate_running_elfs"),
+            self.assertLogs(agent.logger, level="INFO") as logs,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            agent._run_daemon_loop(4)
+        pool.assert_called_once_with(max_workers=8)
+        self.assertEqual(fetch.call_count, 8)
+        self.assertTrue(
+            any("queued (8/8 running)" in message for message in logs.output)
+        )
+
     def test_defaults_and_invalid_limits(self):
         self.assertEqual(scanner_parallel_limits({}), {"nmap": 1, "masscan": 1})
         self.assertEqual(

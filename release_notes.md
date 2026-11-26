@@ -1,5 +1,7 @@
 # Release notes
 
+- Count only enabled, available scanners in the worker pool and queue capacity.
+
 - Show INFO/WARNING/ERROR by default. `-v` displays scanner progress at INFO;
   `-vv` enables agent debug, Nmap `-d --script-trace` and Masscan `-vv` output.
 

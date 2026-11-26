@@ -39,3 +39,17 @@ def scanner_parallel_limits(config):
             )
         limits[tool] = limit
     return limits
+
+
+def active_scanner_limits(config):
+    """Exclude disabled or unavailable scanners from runtime capacity."""
+    limits = scanner_parallel_limits(config)
+    capabilities = config.get("capabilities", ["nmap"])
+    return {
+        tool: (
+            limit
+            if tool in capabilities and not config.get(f"{tool}_disabled", False)
+            else 0
+        )
+        for tool, limit in limits.items()
+    }

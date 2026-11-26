@@ -33,7 +33,7 @@ from utils.scan_stats import masscan_targeted_ports, nmap_targeted_ports
 from utils.masscan_report import masscan_report_stream
 from utils.netutils import robust_request
 from utils.logrotation import parse_logrotation
-from utils.scanparallel import parse_scanparallel, scanner_parallel_limits
+from utils.scanparallel import parse_scanparallel, active_scanner_limits
 from utils.scanhours import is_scanhours_active
 
 try:
@@ -841,7 +841,7 @@ def scan():
         return False
 
     tool = str(job_message.get("scan_tool") or "nmap").lower()
-    if scanner_parallel_limits(CONFIG).get(tool, 1) == 0:
+    if active_scanner_limits(CONFIG).get(tool, 0) == 0:
         _release_job(job_message.get("job_uid"), job_message.get("attempt_uid"))
         return False
     return run_scan_job(job_message)
@@ -902,7 +902,7 @@ def _run_daemon_loop(scanparallel):
     Run daemon scheduler with bounded scan parallelism.
     """
     backoff_delay = BACKOFF_START
-    limits = scanner_parallel_limits({**CONFIG, "scanparallel": scanparallel})
+    limits = active_scanner_limits({**CONFIG, "scanparallel": scanparallel})
     capacity = sum(limits.values())
     max_workers = max(capacity, 1)
 
@@ -962,7 +962,7 @@ def _run_daemon_loop(scanparallel):
                     break
 
                 tool = str(job_message.get("scan_tool") or "nmap").lower()
-                if limits.get(tool, 1) == 0:
+                if limits.get(tool, 0) == 0:
                     _release_job(
                         job_message.get("job_uid"), job_message.get("attempt_uid")
                     )
@@ -1022,7 +1022,7 @@ def loop(repeat):
     if not _scanhours_enabled():
         logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
         return
-    if not any(scanner_parallel_limits(CONFIG).values()):
+    if not any(active_scanner_limits(CONFIG).values()):
         logger.info("scanparallel is 0, standby")
         return
     scan()
