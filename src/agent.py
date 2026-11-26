@@ -32,7 +32,7 @@ from utils.setup import parse_masscan_rate, setup
 from utils.scan_stats import masscan_targeted_ports, nmap_targeted_ports
 from utils.netutils import robust_request
 from utils.logrotation import parse_logrotation
-from utils.scanparallel import parse_scanparallel
+from utils.scanparallel import parse_scanparallel, scanner_parallel_limits
 from utils.scanhours import is_scanhours_active
 
 try:
@@ -832,6 +832,10 @@ def scan():
             time.sleep(NO_JOB_SLEEP)
         return False
 
+    tool = str(job_message.get("scan_tool") or "nmap").lower()
+    if scanner_parallel_limits(CONFIG).get(tool, 1) == 0:
+        _release_job(job_message.get("job_uid"), job_message.get("attempt_uid"))
+        return False
     return run_scan_job(job_message)
 
 
@@ -890,15 +894,26 @@ def _run_daemon_loop(scanparallel):
     Run daemon scheduler with bounded scan parallelism.
     """
     backoff_delay = BACKOFF_START
-    max_workers = max(scanparallel, 1)
+    limits = scanner_parallel_limits({**CONFIG, "scanparallel": scanparallel})
+    capacity = sum(limits.values())
+    max_workers = max(capacity, 1)
 
-    logger.info("Starting to work endlessly with scanparallel=%s", scanparallel)
+    logger.info(
+        "Starting to work endlessly with nmap_scanparallel=%s masscan_scanparallel=%s",
+        limits["nmap"],
+        limits["masscan"],
+    )
     executor = ThreadPoolExecutor(max_workers=max_workers)
     running = {}
+    running_tools = {}
+    pending = None
     last_scanhours_standby_log = None
     try:
         while True:
             _drain_finished_jobs(running)
+            running_tools = {
+                f: tool for f, tool in running_tools.items() if f in running
+            }
 
             if not _scanhours_enabled():
                 now = time.monotonic()
@@ -913,21 +928,21 @@ def _run_daemon_loop(scanparallel):
                 _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
                 continue
 
-            if scanparallel == 0:
+            if capacity == 0:
                 logger.info("scanparallel is 0, standby")
                 _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
                 continue
 
-            if len(running) >= scanparallel:
+            if len(running) >= capacity:
                 _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
                 continue
 
             no_job = False
             controller_error = False
 
-            while len(running) < scanparallel:
+            while len(running) < capacity:
                 try:
-                    job_message = fetch_job()
+                    job_message = pending if pending is not None else fetch_job()
                     backoff_delay = BACKOFF_START
                 except RuntimeError as error:
                     logger.error("%s", error)
@@ -938,17 +953,34 @@ def _run_daemon_loop(scanparallel):
                     no_job = True
                     break
 
+                tool = str(job_message.get("scan_tool") or "nmap").lower()
+                if limits.get(tool, 1) == 0:
+                    _release_job(
+                        job_message.get("job_uid"), job_message.get("attempt_uid")
+                    )
+                    pending = None
+                    no_job = True
+                    break
+                if sum(value == tool for value in running_tools.values()) >= limits.get(
+                    tool, 1
+                ):
+                    pending = job_message
+                    break
+                pending = None
                 job_uid = _short_uid(job_message.get("job_uid"))
                 future = executor.submit(run_scan_job, job_message)
                 running[future] = job_uid
+                running_tools[future] = tool
                 logger.info(
                     "Job %s queued (%s/%s running)",
                     job_uid,
                     len(running),
-                    scanparallel,
+                    capacity,
                 )
 
-            if controller_error:
+            if pending is not None:
+                _wait_for_worker_or_sleep(running, STANDBY_SLEEP)
+            elif controller_error:
                 logger.info("Controller backoff %ss", backoff_delay)
                 _wait_for_worker_or_sleep(running, backoff_delay)
                 backoff_delay = min(backoff_delay * 2, BACKOFF_MAX)
@@ -960,6 +992,8 @@ def _run_daemon_loop(scanparallel):
         terminate_running_elfs()
         raise
     finally:
+        if pending is not None:
+            _release_job(pending.get("job_uid"), pending.get("attempt_uid"))
         if running:
             terminate_running_elfs()
         executor.shutdown(wait=False, cancel_futures=True)
@@ -980,7 +1014,7 @@ def loop(repeat):
     if not _scanhours_enabled():
         logger.info("Outside scanhours %s GMT, standby", CONFIG.get("scanhours"))
         return
-    if scanparallel == 0:
+    if not any(scanner_parallel_limits(CONFIG).values()):
         logger.info("scanparallel is 0, standby")
         return
     scan()
@@ -1023,12 +1057,21 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-scanparallel",
-        help="Maximum scan jobs to run in parallel, 0 for standby",
+        dest="scanparallel",
+        metavar="SCANPARALLEL",
+        help="Default parallel jobs per scanner, default 1",
     )
     parser.add_argument(
         "-logrotation",
         help="Daily log retention in days, default 30",
     )
+    for tool in ("nmap", "masscan"):
+        parser.add_argument(
+            f"--{tool}-scanparallel",
+            f"-{tool}_scanparallel",
+            dest=f"{tool}_scanparallel",
+            help=f"Maximum simultaneous {tool} jobs; overrides scanparallel",
+        )
 
     parser.add_argument(
         "-v",

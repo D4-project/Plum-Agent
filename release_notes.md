@@ -1,5 +1,10 @@
 # Release notes
 
+- Add independent `nmap_scanparallel` and `masscan_scanparallel` limits,
+  configurable with `-s --nmap-scanparallel N --masscan-scanparallel M`.
+  `scanparallel` / `-scanparallel` provides the fallback per scanner (default 1),
+  not a total ceiling. Explicit scanner limits always take priority.
+
 - Skip unresolved Masscan hostnames with a warning and scan remaining targets.
   If none remain, submit an empty result instead of returning the job to the queue.
 

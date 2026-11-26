@@ -14,7 +14,7 @@ from utils.meta import get_bot_info
 from utils.mutils import locate_elf, Dict2obj
 from utils.netutils import EndpointUnavailable, get_ext_ip, get_ext_ips, robust_request
 from utils.logrotation import parse_logrotation
-from utils.scanparallel import parse_scanparallel
+from utils.scanparallel import parse_scanparallel, scanner_parallel_limits
 from utils.scanhours import normalize_scanhours
 
 logger = logging.getLogger("Plum_Agent")
@@ -214,6 +214,21 @@ def setup(cfg, cmd_args):
             sys.exit(7)
         logger.info("Scan parallel jobs set to %s", cfg.get("scanparallel"))
         flag_setupchanged = True
+    for key in ("nmap_scanparallel", "masscan_scanparallel"):
+        value = getattr(cmd_args, key, None)
+        if value is not None:
+            try:
+                cfg[key] = parse_scanparallel(value)
+            except ValueError:
+                sys.exit(7)
+            flag_setupchanged = True
+    try:
+        scanner_parallel_limits(cfg)
+    except ValueError:
+        logger.error(
+            "Invalid scanner parallelism: per-scanner limits must be integers >= 1"
+        )
+        sys.exit(7)
     if getattr(cmd_args, "logrotation", None) is not None:
         try:
             cfg["logrotation"] = parse_logrotation(cmd_args.logrotation)

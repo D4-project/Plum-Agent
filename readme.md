@@ -117,13 +117,27 @@ python agent.py -s -scanhours 14-16
 
 Optional parallel scan jobs:
 ```yaml
-scanparallel: 4
+scanparallel: 1
+nmap_scanparallel: 3
+masscan_scanparallel: 4
 ```
 
 Or from the command line:
 ```bash
-python agent.py -s -scanparallel 4
+python agent.py -s -scanparallel 1 --nmap-scanparallel 3 --masscan-scanparallel 4
 ```
+
+`scanparallel` is the fallback per scanner (default 1), not a total ceiling.
+Each explicit per-scanner limit takes priority, even above `scanparallel`.
+The example allows 3 Nmap and 4 Masscan jobs simultaneously (7 total).
+Per-scanner overrides must be integers >= 1. A fallback of 0 pauses scanners
+without an explicit override. CLI values
+override YAML and are saved by setup. These limits control simultaneous scan
+processes, not internal scanner threads or packet rates. Restart the agent after
+changing them. Use `nmap_disabled` or `masscan_disabled` to disable a scanner.
+If Island supplies a job whose scanner is at capacity, the agent holds at most
+one pending job and waits before requesting another. This can temporarily leave
+capacity unused for the other scanner; pending jobs are released on shutdown.
 
 Optional daily log retention:
 ```yaml
@@ -234,7 +248,11 @@ options:
   -scanhours SCANHOURS
                       GMT scan window in HH-HH format, example 14-16
   -scanparallel SCANPARALLEL
-                      Maximum scan jobs to run in parallel, 0 for standby
+                      Default parallel jobs per scanner, default 1
+  --nmap-scanparallel NMAP_SCANPARALLEL
+                      Maximum simultaneous Nmap jobs; overrides scanparallel
+  --masscan-scanparallel MASSCAN_SCANPARALLEL
+                      Maximum simultaneous Masscan jobs; overrides scanparallel
   -logrotation LOGROTATION
                       Daily log retention in days, default 30
   -v, --verbose       -v: scanner output, -vv: full debug (overrides config)
