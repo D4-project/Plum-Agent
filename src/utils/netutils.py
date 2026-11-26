@@ -18,6 +18,29 @@ class EndpointUnavailable(Exception):
     """The controller does not provide the requested optional endpoint."""
 
 
+def get_ext_ips():
+    """Detect externally visible addresses independently for IPv4 and IPv6."""
+    providers = {
+        4: "https://api4.ipify.org",
+        6: "https://api6.ipify.org",
+    }
+    detected = {}
+    for version, provider in providers.items():
+        try:
+            response = requests.get(provider, timeout=5)
+            response.raise_for_status()
+            address = ipaddress.ip_address(response.text.strip())
+            if address.version == version and address.is_global:
+                detected[version] = str(address)
+                logger.info("Detected external IPv%s address", version)
+            else:
+                logger.info("No external IPv%s address detected", version)
+        except (Timeout, SSLError, ConnectionError, socket.gaierror,
+                TypeError, ValueError, RequestException) as error:
+            logger.info("External IPv%s connectivity unavailable: %s", version, error)
+    return detected
+
+
 def get_ext_ip():
     """
     Resolve the external (non-RFC1918) IP (v4 or v6) of the host

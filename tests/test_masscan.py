@@ -24,11 +24,12 @@ class MasscanJobTests(unittest.TestCase):
         """Verify arguments resolve hostnames and enable banners."""
         job = {
             "job": "192.0.2.0/31,example.test",
+            "scan_family": "ipv4",
             "detect_protocol": True,
         }
         address = (None, None, None, None, ("192.0.2.5", 0))
         with (
-            mock.patch.dict(agent.CONFIG, {"masscan_ip": "192.0.2.10"}),
+            mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "192.0.2.10"}),
             mock.patch.object(
                 agent.socket, "getaddrinfo", return_value=[address, address]
             ),
@@ -55,15 +56,15 @@ class MasscanJobTests(unittest.TestCase):
 
     def test_banner_jobs_require_a_matching_dedicated_ip(self):
         """Verify banner jobs require a matching dedicated ip."""
-        job = {"job": "192.0.2.1", "detect_protocol": True}
-        with mock.patch.dict(agent.CONFIG, {"masscan_ip": None}):
+        job = {"job": "192.0.2.1", "scan_family": "ipv4", "detect_protocol": True}
+        with mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": None}):
             with self.assertRaises(ValueError):
                 agent._build_masscan_args(job, "/tmp/output.xml", "443")
             args = agent._build_masscan_args(
                 {**job, "detect_protocol": False}, "/tmp/output.xml", "443"
             )
             self.assertNotIn("--source-ip", args)
-        with mock.patch.dict(agent.CONFIG, {"masscan_ip": "2001:db8::2"}):
+        with mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "2001:db8::2"}):
             with self.assertRaises(ValueError):
                 agent._build_masscan_args(job, "/tmp/output.xml", "443")
 
@@ -85,7 +86,7 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False):
+            def run(_executable, arguments, show_output=False, **_kwargs):
                 """Provide the run test fixture."""
                 del show_output
                 with open(
@@ -104,6 +105,7 @@ class MasscanJobTests(unittest.TestCase):
                             "job_uid": self.UID,
                             "attempt_uid": self.ATTEMPT_UID,
                             "scan_tool": "masscan",
+                            "scan_family": "ipv4",
                             "scan_ports": [22],
                         }
                     }
@@ -163,7 +165,7 @@ class MasscanJobTests(unittest.TestCase):
 
     def test_successful_report_is_sent_through_nmap2json(self):
         """Verify successful report is sent through nmap2json."""
-        self.enterContext(mock.patch.dict(agent.CONFIG, {"masscan_ip": "192.0.2.10"}))
+        self.enterContext(mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "192.0.2.10"}))
         document = (
             '<nmaprun scanner="masscan"><host starttime="80" endtime="100">'
             '<address addr="192.0.2.1"/><ports><port portid="22" protocol="tcp">'
@@ -173,7 +175,7 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False):
+            def run(_executable, arguments, show_output=False, **_kwargs):
                 """Provide the run test fixture."""
                 del show_output
                 output = arguments[arguments.index("-oX") + 1]
@@ -210,6 +212,7 @@ class MasscanJobTests(unittest.TestCase):
                             "job_uid": self.UID,
                             "attempt_uid": self.ATTEMPT_UID,
                             "scan_tool": "masscan",
+                            "scan_family": "ipv4",
                             "scan_ports": [22],
                             "detect_protocol": True,
                             "_received_at": "90",
@@ -227,7 +230,7 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False):
+            def run(_executable, arguments, show_output=False, **_kwargs):
                 """Provide the run test fixture."""
                 del show_output
                 open(arguments[arguments.index("-oX") + 1], "wb").close()
@@ -262,6 +265,7 @@ class MasscanJobTests(unittest.TestCase):
                             "job_uid": self.UID,
                             "attempt_uid": self.ATTEMPT_UID,
                             "scan_tool": "masscan",
+                            "scan_family": "ipv4",
                             "scan_ports": [80],
                         }
                     )
@@ -304,6 +308,7 @@ class MasscanJobTests(unittest.TestCase):
                             "job_uid": self.UID,
                             "attempt_uid": self.ATTEMPT_UID,
                             "scan_tool": "masscan",
+                            "scan_family": "ipv4",
                             "scan_ports": [80],
                         }
                     )

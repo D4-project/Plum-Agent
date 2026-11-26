@@ -1,5 +1,16 @@
 # Release notes
 
+- Require nmap2json 2611.5. Nonzero response TTL values are excluded from
+  host and port hashes.
+
+- Report independently available Masscan IPv4 and IPv6 families and matching
+  banner source addresses. Run family-specific jobs from Island after
+  migrations 33 and 34.
+
+- Use YAML verbosity by default. `-v` enables Nmap and Masscan process
+  output, and `-vv` adds full debugging. Routine scanner progress uses
+  debug logging and scanner failures remain errors.
+
 - Require nmap2json 2611.4: mark only Masscan reports with `engine: masscan`.
   Nmap reports stay unchanged; engine metadata is excluded from content hashes.
 

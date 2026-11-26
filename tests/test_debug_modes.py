@@ -1,5 +1,7 @@
 """Verify YAML/CLI mode selection and Nmap output visibility."""
 
+import io
+import logging
 import os
 import sys
 import unittest
@@ -20,8 +22,9 @@ class DebugModeTests(unittest.TestCase):
             ("none", 0, "none"),
             ("info", 0, "info"),
             ("debug", 0, "debug"),
-            ("debug", 1, "info"),
+            ("debug", 1, "scanner"),
             ("none", 2, "debug"),
+            ("none", 3, "debug"),
             (False, 0, "none"),
             (True, 0, "debug"),
         ):
@@ -33,7 +36,48 @@ class DebugModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent.resolve_debug_mode("verbose")
 
-    def test_normal_mode_logs_scan_start_without_command_or_nmap_output(self):
+    def test_runtime_log_levels_separate_scanner_and_agent_output(self):
+        self.addCleanup(agent.logger.setLevel, agent.logger.level)
+        self.addCleanup(mutils.scanner_logger.setLevel, mutils.scanner_logger.level)
+        for mode, expected in (
+            ("none", ["agent error", "scanner error"]),
+            ("info", ["agent info", "agent error", "scanner warning", "scanner error"]),
+            (
+                "scanner",
+                [
+                    "agent info",
+                    "agent error",
+                    "scanner debug",
+                    "scanner warning",
+                    "scanner error",
+                ],
+            ),
+            (
+                "debug",
+                [
+                    "agent info",
+                    "agent debug",
+                    "agent error",
+                    "scanner debug",
+                    "scanner warning",
+                    "scanner error",
+                ],
+            ),
+        ):
+            with self.subTest(mode=mode):
+                stream = io.StringIO()
+                handler = logging.StreamHandler(stream)
+                with mock.patch.object(agent.logger, "handlers", [handler]):
+                    agent.configure_log_levels(mode)
+                    agent.logger.info("agent info")
+                    agent.logger.debug("agent debug")
+                    agent.logger.error("agent error")
+                    mutils.scanner_logger.debug("scanner debug")
+                    mutils.scanner_logger.warning("scanner warning")
+                    mutils.scanner_logger.error("scanner error")
+                self.assertEqual(stream.getvalue().splitlines(), expected)
+
+    def test_normal_mode_runs_scanner_with_output_hidden(self):
         job = {
             "job": "example.test",
             "job_uid": "f5813ec7-b36b-4fe7-b662-cca3d281725c",
@@ -51,16 +95,14 @@ class DebugModeTests(unittest.TestCase):
                 with mock.patch.object(agent.os.path, "isfile", return_value=True):
                     with mock.patch.object(agent, "nmap_file_to_json", return_value={}):
                         with mock.patch.object(agent.os, "remove"):
-                            with mock.patch.object(agent, "robust_request", return_value={}):
-                                with self.assertLogs(agent.logger, level="INFO") as captured:
-                                    self.assertTrue(agent.run_scan_job(job))
+                            with mock.patch.object(
+                                agent, "robust_request", return_value={}
+                            ):
+                                self.assertTrue(agent.run_scan_job(job))
 
-        output = "\n".join(captured.output)
-        self.assertIn("scan started target=example.test", output)
-        self.assertIn("scan completed target=example.test", output)
-        self.assertNotIn("Nmap command:", output)
         runner.assert_called_once()
         self.assertFalse(runner.call_args.kwargs["show_output"])
+        self.assertEqual(runner.call_args.kwargs["job_uid"], "f5813ec7...725c")
 
     def test_info_shows_command_without_nmap_verbose_flags(self):
         job = {
@@ -79,7 +121,25 @@ class DebugModeTests(unittest.TestCase):
         arguments = runner.call_args.args[1]
         self.assertNotIn("-v", arguments)
         self.assertNotIn("-script-trace", arguments)
+        self.assertFalse(runner.call_args.kwargs["show_output"])
+
+    def test_scanner_mode_streams_nmap_without_script_trace(self):
+        job = {
+            "job": "example.test",
+            "job_uid": "f5813ec7-b36b-4fe7-b662-cca3d281725c",
+            "nmap_ports": [80],
+        }
+        mode = agent.resolve_debug_mode("none", cli_verbosity=1)
+        with mock.patch.dict(
+            agent.CONFIG, {"nmap_path": "/usr/bin/nmap", "debug_mode": mode}
+        ):
+            with mock.patch.object(agent, "run_elf", return_value=-1) as runner:
+                with mock.patch.object(agent, "_release_job"):
+                    self.assertFalse(agent.run_scan_job(job))
+
         self.assertTrue(runner.call_args.kwargs["show_output"])
+        self.assertIn("-v", runner.call_args.args[1])
+        self.assertNotIn("-script-trace", runner.call_args.args[1])
 
     def test_debug_adds_nmap_verbose_flags(self):
         job = {"job": "example.test"}
@@ -92,24 +152,68 @@ class DebugModeTests(unittest.TestCase):
 
     def test_process_output_is_drained_and_only_logged_when_enabled(self):
         script = (
-            "import sys; print('stdout marker'); "
-            "print('stderr marker', file=sys.stderr)"
+            "import sys; print('Starting Nmap'); "
+            "sys.stderr.write('Starting masscan\\n"
+            "rate:  0.00-kpps, 100.00% done, waiting 2-secs, found=1\\r   \\r')"
         )
-        with mock.patch.object(mutils.logger, "info") as info_log:
-            with mock.patch.object(mutils.logger, "error") as error_log:
-                self.assertEqual(
-                    mutils.run_elf(sys.executable, ["-c", script], show_output=False),
-                    0,
-                )
-                info_log.assert_not_called()
-                error_log.assert_not_called()
+        with self.assertNoLogs(mutils.logger, level="DEBUG"):
+            self.assertEqual(
+                mutils.run_elf(sys.executable, ["-c", script], show_output=False), 0
+            )
 
-                self.assertEqual(
-                    mutils.run_elf(sys.executable, ["-c", script], show_output=True),
-                    0,
-                )
-                info_log.assert_called_once_with("stdout marker")
-                error_log.assert_called_once_with("stderr marker")
+        with self.assertLogs(mutils.logger, level="DEBUG") as captured:
+            self.assertEqual(mutils.run_elf(sys.executable, ["-c", script]), 0)
+        self.assertCountEqual(
+            [(record.levelname, record.getMessage()) for record in captured.records],
+            [
+                ("DEBUG", "Starting Nmap"),
+                ("DEBUG", "Starting masscan"),
+                ("DEBUG", "rate:  0.00-kpps, 100.00% done, waiting 2-secs, found=1"),
+            ],
+        )
+
+    def test_failed_scanner_preserves_stderr_in_quiet_mode(self):
+        script = (
+            "import sys; "
+            "sys.stderr.write('Starting masscan\\n"
+            "pcap_open_live: Permission denied\\n"
+            "[-] FAIL: adapter could not be opened\\n"
+            "rate: 0.00-kpps, 100.00% done, waiting 1-secs, found=0\\r'); "
+            "sys.exit(2)"
+        )
+        with self.assertLogs(mutils.logger, level="INFO") as captured:
+            self.assertEqual(
+                mutils.run_elf(
+                    sys.executable, ["-c", script], show_output=False, job_uid="scan-1"
+                ),
+                2,
+            )
+        self.assertEqual(
+            [record.levelname for record in captured.records], ["ERROR"] * 2
+        )
+        messages = [record.getMessage() for record in captured.records]
+        self.assertIn("Job scan-1", messages[0])
+        self.assertIn("FAIL: adapter could not be opened", messages[0])
+        self.assertIn("stderr (exit 2): pcap_open_live: Permission denied", messages[1])
+
+    def test_explicit_scanner_diagnostics_keep_severity_and_escape_output(self):
+        stderr = (
+            "\x1b[33mWARNING: DNS unavailable\x1b[0m\n"
+            "\x1b]0;terminal title\x07ERROR: <target>\u2028" + "x" * 200 + "\n"
+        )
+        script = f"import sys; sys.stderr.write({stderr!r})"
+        with self.assertLogs(mutils.logger, level="INFO") as captured:
+            self.assertEqual(
+                mutils.run_elf(sys.executable, ["-c", script], show_output=False), 0
+            )
+        warning, error = captured.records
+        self.assertEqual(warning.levelname, "WARNING")
+        self.assertTrue(warning.getMessage().endswith("WARNING: DNS unavailable"))
+        self.assertEqual(error.levelname, "ERROR")
+        message = error.getMessage().split(": ", 1)[1]
+        self.assertTrue(message.startswith("ERROR: &lt;target&gt;"))
+        self.assertEqual(len(message), 100)
+        self.assertNotIn("\u2028", message)
 
 
 if __name__ == "__main__":

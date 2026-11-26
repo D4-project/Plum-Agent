@@ -71,6 +71,7 @@ class SetupModeTest(unittest.TestCase):
             patch.object(setup, "locate_elf", return_value=(True, "/usr/bin/masscan")),
             patch.object(setup, "_masscan_has_raw_socket_access", return_value=True),
             patch.object(setup, "_masscan_supports_ipv6", return_value=False),
+            patch.object(setup, "get_ext_ips", return_value={4: "192.0.2.1"}),
             patch.object(
                 setup,
                 "robust_request",
@@ -80,6 +81,7 @@ class SetupModeTest(unittest.TestCase):
             result = setup.setup(config, args)
         self.assertEqual(result["capabilities"], ["masscan"])
         self.assertEqual(request.call_args.kwargs["data"]["capabilities"], ["masscan"])
+        self.assertEqual(request.call_args.kwargs["data"]["masscan_families"], ["ipv4"])
         self.assertNotIn("capabilities", result["botinfo"])
 
     def test_legacy_island_registers_nmap_without_inventory_or_masscan_checks(self):

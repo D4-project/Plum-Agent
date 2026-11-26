@@ -12,7 +12,7 @@ import json
 import yaml
 from utils.meta import get_bot_info
 from utils.mutils import locate_elf, Dict2obj
-from utils.netutils import EndpointUnavailable, get_ext_ip, robust_request
+from utils.netutils import EndpointUnavailable, get_ext_ip, get_ext_ips, robust_request
 from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel
 from utils.scanhours import normalize_scanhours
@@ -20,11 +20,13 @@ from utils.scanhours import normalize_scanhours
 logger = logging.getLogger("Plum_Agent")
 
 
-def validate_masscan_ip(value):
-    """Require a unicast source address outside the kernel's local addresses."""
+def validate_masscan_ip(value, version=None):
+    """Require a dedicated unicast source address of the requested family."""
     if value in (None, ""):
         return None
     address = ipaddress.ip_address(value)
+    if version is not None and address.version != version:
+        raise ValueError(f"masscan_ip_v{version} must be IPv{version}")
     if (
         address.is_unspecified
         or address.is_multicast
@@ -159,14 +161,35 @@ def setup(cfg, cmd_args):
 
     flag_setupchanged = False
 
-    if getattr(cmd_args, "masscan_ip", None) is not None:
-        cfg["masscan_ip"] = cmd_args.masscan_ip
+    # Migrate old config and CLI settings into their matching family key.
+    legacy_source = cfg.pop("masscan_ip", None)
+    legacy_argument = getattr(cmd_args, "masscan_ip", None)
+    if legacy_argument:
+        legacy_source = legacy_argument
         flag_setupchanged = True
-    try:
-        cfg["masscan_ip"] = validate_masscan_ip(cfg.get("masscan_ip"))
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        logger.error("Invalid masscan_ip: %s", error)
-        sys.exit(1)
+    if legacy_source:
+        try:
+            legacy_family = ipaddress.ip_address(legacy_source).version
+        except ValueError:
+            logger.error("Invalid legacy masscan_ip")
+            sys.exit(1)
+        key = f"masscan_ip_v{legacy_family}"
+        if legacy_argument:
+            cfg[key] = legacy_source
+        else:
+            cfg.setdefault(key, legacy_source)
+        flag_setupchanged = True
+    for version in (4, 6):
+        key = f"masscan_ip_v{version}"
+        argument = getattr(cmd_args, key, None)
+        if argument is not None:
+            cfg[key] = argument
+            flag_setupchanged = True
+        try:
+            cfg[key] = validate_masscan_ip(cfg.get(key), version)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            logger.error("Invalid %s: %s", key, error)
+            sys.exit(1)
 
     if getattr(cmd_args, "island", None):
         cfg["island"] = cmd_args.island
@@ -300,10 +323,10 @@ def setup(cfg, cmd_args):
         except ValueError as error:
             logger.error("Invalid masscan_rate: %s", error)
             sys.exit(1)
-        cfg["masscan_ipv6"] = _masscan_supports_ipv6(cfg["masscan_path"])
+        cfg["masscan_ipv6_binary"] = _masscan_supports_ipv6(cfg["masscan_path"])
         logger.info(
-            "Masscan IPv6 targets %s",
-            "supported" if cfg["masscan_ipv6"] else "not supported",
+            "Masscan IPv6 binary support %s",
+            "available" if cfg["masscan_ipv6_binary"] else "unavailable",
         )
 
     # Retrieve or regenerate UUID of the agent
@@ -325,6 +348,35 @@ def setup(cfg, cmd_args):
             logger.error("External IP could not be determined")
             sys.exit(2)
 
+    # Only advertise a Masscan address family when the host has verified
+    # external connectivity on that family and the binary supports it.
+    external_ips = get_ext_ips() if "masscan" in capabilities else {}
+    # `curr_ip` proves reachability only when it was discovered dynamically;
+    # a configured identity override is not a connectivity check.
+    if not cfg.get("ext_ip"):
+        try:
+            address = ipaddress.ip_address(cfg.get("curr_ip"))
+        except (TypeError, ValueError):
+            address = None
+        if address is not None and address.is_global:
+            external_ips.setdefault(address.version, str(address))
+    if "masscan" in capabilities:
+        cfg["masscan_ipv4"] = 4 in external_ips
+        cfg["masscan_ipv6"] = (
+            6 in external_ips and bool(cfg.get("masscan_ipv6_binary"))
+        )
+        logger.info(
+            "Masscan address families enabled: IPv4=%s IPv6=%s",
+            cfg["masscan_ipv4"], cfg["masscan_ipv6"],
+        )
+        if not cfg["masscan_ipv4"] and not cfg["masscan_ipv6"]:
+            logger.warning("Masscan found, but no externally reachable IP family was detected")
+            if "nmap" not in capabilities and not cmd_args.setup:
+                logger.error("Masscan cannot start without external IPv4 or IPv6 connectivity")
+                sys.exit(1)
+            capabilities = [tool for tool in capabilities if tool != "masscan"]
+            cfg["capabilities"] = capabilities
+
     # If config changed save it.
     if flag_setupchanged:
         save_config(cfg)
@@ -341,8 +393,16 @@ def setup(cfg, cmd_args):
         bot_report = dict(cfg["botinfo"])
         if tool_inventory:
             bot_report["capabilities"] = list(capabilities)
-            if cfg.get("masscan_ip") and "masscan" in capabilities:
-                bot_report["masscan_ip"] = cfg["masscan_ip"]
+            if "masscan" in capabilities:
+                bot_report["masscan_families"] = [
+                    f"ipv{version}"
+                    for version in (4, 6)
+                    if cfg.get(f"masscan_ipv{version}", False)
+                ]
+                for version in (4, 6):
+                    source = cfg.get(f"masscan_ip_v{version}")
+                    if source:
+                        bot_report[f"masscan_ip_v{version}"] = source
         ready_msg = robust_request(
             cfg.get("APIPATH").register, method="POST", data=bot_report, max_retries=3
         )

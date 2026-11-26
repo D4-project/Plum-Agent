@@ -83,6 +83,7 @@ class ScanStatsTest(unittest.TestCase):
                                     job="192.0.2.0/30",
                                     job_uid="f5813ec7-b36b-4fe7-b662-cca3d281725c",
                                     scan_tool=tool,
+                                    scan_family="ipv4" if tool == "masscan" else None,
                                     scan_ports=[22, 443],
                                     report_target_count=requested,
                                 )

@@ -149,12 +149,12 @@ Choose the output mode in `src/config/config.yaml`:
 debug: none
 ```
 
-`none` (default) logs the scan target, start, and completion without Nmap output.
-`info` adds Nmap stdout/stderr and a shortened command preview. `debug` adds
-DEBUG diagnostics, the full command, and verbose Nmap output (`-v` and
-`-script-trace`). Use `-v` for info or `-vv` for debug on the command line;
-either overrides the YAML mode for that invocation. Existing `debug: false`
-and `debug: true` values still mean `none` and `debug` respectively.
+`none` (default) logs errors only. `info` adds job summaries and a shortened
+command preview. `debug` adds scanner output, full commands, Nmap script traces
+and agent diagnostics. On the command line, `-v` shows agent status, errors and
+Nmap and Masscan process output. `-vv` enables full debug. Both options override the
+YAML mode. Existing `debug: false` and `debug: true` values still select `none`
+and `debug` respectively.
 
 ### Profile-level Nmap parameters
 
@@ -225,7 +225,7 @@ options:
                       Maximum scan jobs to run in parallel, 0 for standby
   -logrotation LOGROTATION
                       Daily log retention in days, default 30
-  -v, --verbose       -v: info, -vv: debug (overrides config)
+  -v, --verbose       -v: scanner output, -vv: full debug (overrides config)
 ```
 
 Masscan host reports carry `"engine": "masscan"` through nmap2json 2611.4.

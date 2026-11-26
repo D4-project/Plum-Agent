@@ -2,17 +2,43 @@
 This module hold generic common utils fonction
 """
 
-import subprocess
-import shutil
+import html
 import logging
-import threading
 import os
+import re
+import shutil
 import signal
+import subprocess
+import threading
+from collections import deque
 from subprocess import CalledProcessError
 
 logger = logging.getLogger("Plum_Agent")
+scanner_logger = logger.getChild("scanner")
 _RUNNING_ELFS = set()
 _RUNNING_ELFS_LOCK = threading.Lock()
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b[PX^_][^\x1b]*\x1b\\"
+    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|\x1b[ -/]*[@-_]"
+)
+_LOG_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_SCANNER_STATUS = re.compile(
+    r"^(?:rate:\s*\S+-kpps,|Starting (?:masscan|Nmap)\b|Initiating .+ Scan\b"
+    r"|Scanning \d+ hosts?\b|-- forced options:)",
+    re.IGNORECASE,
+)
+_SCANNER_ERROR = re.compile(
+    r"^(?:Quitting!?$|(?:\[-\]\s*)?(?:Error|Fail|Fatal)\s*:)", re.IGNORECASE
+)
+_SCANNER_WARNING = re.compile(r"^(?:Warning\s*:|Failed to resolve\b)", re.IGNORECASE)
+
+
+def safe_log_value(value):
+    """Escape and bound text from the controller or a scanner for one log record."""
+    text = _LOG_CONTROL.sub("", _ANSI_ESCAPE.sub("", str(value)))
+    return html.escape(text, quote=False)[:100]
 
 
 def get_version():
@@ -106,42 +132,51 @@ def terminate_running_elfs(grace_period=5):
             _terminate_process(process, grace_period=grace_period)
 
 
-def run_elf(elfpath, options=None, show_output=True):
-    """
-    This function execute and wait the end of the process.
-    Drain both streams; optionally log stdout as INFO and stderr as ERROR.
-    """
+def run_elf(elfpath, options=None, show_output=True, *, job_uid=None):
+    """Drain scanner output and preserve failure details even in quiet mode."""
     cmd = [elfpath] + (options if options else [])  # squash empty strings.
+    source = safe_log_value(os.path.basename(elfpath))
+    if job_uid:
+        source = f"Job {safe_log_value(job_uid)} {source}"
+    diagnostics = deque(maxlen=5)
 
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         bufsize=1,
-        universal_newlines=True,
         start_new_session=True,
     )
     with _RUNNING_ELFS_LOCK:
         _RUNNING_ELFS.add(process)
 
-    def reader(pipe, log_func, prefix=""):
-        for line in iter(pipe.readline, ""):
-            if log_func:
-                log_func(f"{prefix}{line.strip()}")
-        pipe.close()
+    def reader(pipe, stderr=False):
+        with pipe:
+            for line in pipe:
+                message = safe_log_value(line.strip()).strip()
+                if not message:
+                    continue
+                if stderr and _SCANNER_ERROR.match(message):
+                    scanner_logger.error("%s: %s", source, message)
+                    continue
+                if stderr and _SCANNER_WARNING.match(message):
+                    scanner_logger.warning("%s: %s", source, message)
+                    continue
+                if stderr and not _SCANNER_STATUS.match(message):
+                    diagnostics.append(message)
+                if show_output:
+                    scanner_logger.debug("%s", message)
 
     t_out = threading.Thread(
         target=reader,
-        args=(process.stdout, logger.info if show_output else None),
+        args=(process.stdout,),
         daemon=True,
     )
     t_err = threading.Thread(
         target=reader,
-        args=(
-            process.stderr,
-            logger.error if show_output else None,
-        ),
+        args=(process.stderr, True),
         daemon=True,
     )
 
@@ -157,6 +192,10 @@ def run_elf(elfpath, options=None, show_output=True):
 
         t_out.join()  # Wait end of output
         t_err.join()
+        if return_code > 0 and diagnostics:
+            scanner_logger.error(
+                "%s stderr (exit %d): %s", source, return_code, " | ".join(diagnostics)
+            )
         return return_code
     finally:
         with _RUNNING_ELFS_LOCK:

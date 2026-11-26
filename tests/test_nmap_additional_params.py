@@ -105,7 +105,8 @@ class NmapAdditionalParamsTests(unittest.TestCase):
         ):
             with self.assertLogs(agent.logger, level="DEBUG") as captured:
 
-                def fake_run_elf(executable, arguments, show_output):
+                def fake_run_elf(executable, arguments, show_output, *, job_uid):
+                    self.assertEqual(job_uid, agent._short_uid(job_message["job_uid"]))
                     self.assertTrue(show_output)
                     executed_args.extend([executable, *arguments])
                     messages_seen_at_execution.extend(captured.output)

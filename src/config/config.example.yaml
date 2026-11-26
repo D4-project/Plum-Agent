@@ -1,5 +1,5 @@
-# Output: none = scan start/end only; info = Nmap output; debug = verbose Nmap.
-# CLI -v selects info, -vv selects debug; both override this setting.
+# Output: none = errors only, info = agent summaries, debug = full diagnostics.
+# CLI -v shows agent status and scanner output. -vv enables full diagnostics.
 debug: none
 # debug: info
 # debug: debug
@@ -13,5 +13,8 @@ debug: none
 
 # To pause scanning with the current agent, uncomment this line.
 # scanparallel: 0
-# Dedicated unused source address on the scanner's network, outside kernel interfaces.
-# masscan_ip: 192.0.2.10
+# Masscan IPv4/IPv6 capability is detected from external connectivity at startup.
+# Dedicated source addresses for Masscan banner detection. Each is optional.
+# Assign a matching family address to the network without adding it to a kernel interface.
+# masscan_ip_v4: 192.0.2.10
+# masscan_ip_v6: 2001:db8::10

@@ -6,7 +6,6 @@ Plum Agent Main code
 """
 
 import logging
-import html
 import os
 import argparse
 import re
@@ -28,7 +27,7 @@ import yaml
 from packaging.version import InvalidVersion, Version
 from rich.logging import RichHandler
 from utils.meta import APP_VERSION, print_meta
-from utils.mutils import run_elf, terminate_running_elfs
+from utils.mutils import run_elf, safe_log_value, scanner_logger, terminate_running_elfs
 from utils.setup import parse_masscan_rate, setup
 from utils.scan_stats import masscan_targeted_ports, nmap_targeted_ports
 from utils.netutils import robust_request
@@ -42,7 +41,7 @@ except ImportError:
     nmap_file_to_json = None
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-MIN_NMAP2JSON_VERSION = "2611.4"
+MIN_NMAP2JSON_VERSION = "2611.5"
 NO_JOB_SLEEP = 30
 STANDBY_SLEEP = 60
 BACKOFF_START = 5
@@ -129,16 +128,14 @@ class DailyLogFileHandler(logging.FileHandler):
 
 # Initiate loggers.
 logger = logging.getLogger("Plum_Agent")
-logger.setLevel(logging.DEBUG)  # Niveau global
+logger.setLevel(logging.ERROR)
 
 # Nice and color full console handder
 console_handler = RichHandler()
-console_handler.setLevel(logging.INFO)
 
 # File Handler (auto create folder)
 log_dir = os.path.join(THIS_DIR, "log")
 file_handler = DailyLogFileHandler(log_dir, keep_days=30)
-file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
 )
@@ -192,7 +189,7 @@ def _check_nmap2json():
 def resolve_debug_mode(config_value, cli_verbosity=0):
     """Select the CLI mode when supplied, otherwise parse the YAML setting."""
     if cli_verbosity:
-        return DEBUG_MODES[min(cli_verbosity, 2)]
+        return "scanner" if cli_verbosity == 1 else "debug"
     if config_value is None or config_value is False:
         return "none"
     if config_value is True:
@@ -202,6 +199,18 @@ def resolve_debug_mode(config_value, cli_verbosity=0):
         if mode in DEBUG_MODES:
             return mode
     raise ValueError("debug must be one of: none, info, debug")
+
+
+def configure_log_levels(mode):
+    """Expose scanner DEBUG records independently of general agent logs."""
+    level = {
+        "none": logging.ERROR,
+        "info": logging.INFO,
+        "scanner": logging.INFO,
+        "debug": logging.DEBUG,
+    }[mode]
+    logger.setLevel(level)
+    scanner_logger.setLevel(logging.DEBUG if mode == "scanner" else logging.NOTSET)
 
 
 def _nse_cache_dir():
@@ -301,19 +310,6 @@ def _short_uid(value):
     if len(value) <= 12:
         return value
     return f"{value[:8]}...{value[-4:]}"
-
-
-def _safe_debug_log_value(value):
-    """Bound and escape controller-derived values before DEBUG logging."""
-    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(value))
-    text = "".join(
-        character
-        for character in text
-        if ord(character) >= 32
-        and not 127 <= ord(character) <= 159
-        and character not in "\u2028\u2029"
-    )
-    return html.escape(text, quote=False)[:100]
 
 
 def _nmap_option_name(token):
@@ -424,16 +420,16 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     job_uid = _short_uid(job_message.get("job_uid"))
     logger.debug(
         "Job %s agent_version=%s nmap_additional_params present=%s type=%s",
-        _safe_debug_log_value(job_uid),
-        _safe_debug_log_value(APP_VERSION),
+        safe_log_value(job_uid),
+        safe_log_value(APP_VERSION),
         profile_present,
         type(profile_value).__name__ if profile_present else "missing",
     )
     additional_args = _parse_nmap_additional_params(profile_value)
     logger.debug(
         "Job %s nmap_additional_params option_names=%s",
-        _safe_debug_log_value(job_uid),
-        _safe_debug_log_value(
+        safe_log_value(job_uid),
+        safe_log_value(
             [
                 _nmap_option_name(token)
                 for token in additional_args
@@ -453,8 +449,11 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     ]
     run_args = _merge_nmap_defaults(default_args, additional_args)
 
-    if CONFIG.get("debug_mode") == "debug":
-        run_args.extend(["-v", "-script-trace"])
+    debug_mode = CONFIG.get("debug_mode")
+    if debug_mode in ("scanner", "debug"):
+        run_args.append("-v")
+    if debug_mode == "debug":
+        run_args.append("-script-trace")
 
     run_args.extend(["-p", nmap_ports, "-oX", output_xml, "--no-stylesheet"])
     if nmap_nse_targets:
@@ -534,21 +533,27 @@ def _masscan_rate():
 
 def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=None):
     """Build shell-free Masscan argv from an Island job."""
+    family = job_message.get("scan_family")
+    if family not in ("ipv4", "ipv6"):
+        raise ValueError("Masscan job is missing a valid scan_family")
+    version = 4 if family == "ipv4" else 6
     arguments = _resolve_masscan_targets(
         job_message.get("job") or "", user_hostnames_by_ip
     )
+    arguments = [
+        target for target in arguments
+        if ipaddress.ip_network(target, strict=False).version == version
+    ]
+    if not arguments:
+        # A hostname may have no addresses in this job's family. Complete this
+        # family slice as an empty scan instead of returning it to the queue.
+        return []
     if job_message.get("detect_protocol") is True:
-        source = CONFIG.get("masscan_ip")
+        source = CONFIG.get(f"masscan_ip_v{version}")
         if not source:
-            raise ValueError("Masscan banner detection requires masscan_ip")
-        source_version = ipaddress.ip_address(source).version
-        if any(
-            ipaddress.ip_network(target, strict=False).version != source_version
-            for target in arguments
-        ):
-            raise ValueError(
-                "Masscan banner targets must match the masscan_ip address family"
-            )
+            raise ValueError(f"Masscan banner detection requires masscan_ip_v{version}")
+        if ipaddress.ip_address(source).version != version:
+            raise ValueError(f"masscan_ip_v{version} must be IPv{version}")
         arguments.append("--banners")
         arguments.extend(["--source-ip", source])
     arguments.extend(["-p", ports, "--rate", str(_masscan_rate()), "-oX", output_xml])
@@ -598,7 +603,7 @@ def fetch_job():
     profile_present = "nmap_additional_params" in job_message
     logger.debug(
         "Fetched job %s nmap_additional_params present=%s type=%s",
-        _safe_debug_log_value(_short_uid(job_message.get("job_uid"))),
+        safe_log_value(_short_uid(job_message.get("job_uid"))),
         profile_present,
         (
             type(job_message.get("nmap_additional_params")).__name__
@@ -683,7 +688,10 @@ def run_scan_job(job_message):
             run_args = _build_masscan_args(
                 job_message, output_xml, ports, user_hostnames_by_ip
             )
-            if job_message.get("report_target_count") is True:
+            if not run_args:
+                ports_targeted = 0
+                logger.info("Job %s has no targets in its requested IP family", job_uid)
+            elif job_message.get("report_target_count") is True:
                 try:
                     ports_targeted = masscan_targeted_ports(run_args, ports)
                 except (ValueError, TypeError):
@@ -699,23 +707,28 @@ def run_scan_job(job_message):
         _release_job(range_uid, attempt_uid)
         return False
 
-    full_command = _format_command_for_log(executable, run_args)
-    if CONFIG.get("debug_mode") in ("info", "debug"):
+    full_command = _format_command_for_log(executable, run_args) if run_args else ""
+    if run_args and CONFIG.get("debug_mode") in ("info", "debug"):
         logger.info(
             "Job %s %s command: %s",
             job_uid,
             scan_tool.capitalize(),
             _truncate_command_for_info_log(full_command),
         )
-    logger.debug(
-        "Job %s full %s command: %s", job_uid, scan_tool.capitalize(), full_command
-    )
-    logger.info("Job %s %s scan started target=%s", job_uid, scan_tool, range_toscan)
-    return_code = run_elf(
-        executable,
-        run_args,
-        show_output=CONFIG.get("debug_mode") in ("info", "debug"),
-    )
+    if run_args:
+        logger.debug(
+            "Job %s full %s command: %s", job_uid, scan_tool.capitalize(), full_command
+        )
+        logger.info("Job %s %s scan started target=%s", job_uid, scan_tool, range_toscan)
+        return_code = run_elf(
+            executable,
+            run_args,
+            show_output=CONFIG.get("debug_mode") in ("scanner", "debug"),
+            job_uid=job_uid,
+        )
+    else:
+        logger.info("Job %s %s family slice is empty; reporting no results", job_uid, scan_tool)
+        return_code = 0
     if return_code and return_code < 0:
         logger.warning("Job %s scan interrupted", job_uid)
         _release_job(range_uid, attempt_uid)
@@ -732,7 +745,9 @@ def run_scan_job(job_message):
 
     results = [] if scan_tool == "masscan" else {}
     # fetching report.
-    if os.path.isfile(output_xml):
+    if scan_tool == "masscan" and not run_args:
+        results = []
+    elif os.path.isfile(output_xml):
         try:
             if scan_tool == "nmap" or os.path.getsize(output_xml):
                 if scan_tool == "masscan":
@@ -977,10 +992,16 @@ if __name__ == "__main__":
     parser.add_argument("-agentkey", help="Agent Key")
     parser.add_argument("-ipext", help="Force External IP")
     parser.add_argument(
-        "--masscan-ip",
-        "-masscan_ip",
-        dest="masscan_ip",
-        help="Dedicated Masscan banner source IP; use an empty value to clear",
+        "--masscan-ip", "-masscan_ip", dest="masscan_ip",
+        help="Deprecated: dedicated Masscan source address; use the family-specific option",
+    )
+    parser.add_argument(
+        "--masscan-ip-v4", "-masscan_ip_v4", dest="masscan_ip_v4",
+        help="Dedicated IPv4 source IP for Masscan banner detection",
+    )
+    parser.add_argument(
+        "--masscan-ip-v6", "-masscan_ip_v6", dest="masscan_ip_v6",
+        help="Dedicated IPv6 source IP for Masscan banner detection",
     )
     parser.add_argument(
         "-scanhours",
@@ -1000,7 +1021,7 @@ if __name__ == "__main__":
         "--verbose",
         action="count",
         default=0,
-        help="-v: info, -vv: debug (overrides config)",
+        help="-v: scanner output, -vv: full debug (overrides config)",
     )
 
     args = parser.parse_args()
@@ -1009,10 +1030,8 @@ if __name__ == "__main__":
         CONFIG["debug_mode"] = resolve_debug_mode(CONFIG.get("debug"), args.verbose)
     except ValueError as error:
         parser.error(str(error))
+    configure_log_levels(CONFIG["debug_mode"])
     if CONFIG["debug_mode"] == "debug":
-        console_handler.setLevel(logging.DEBUG)
-        file_handler.setLevel(logging.DEBUG)
-
         # Configure urllib3 for debug logging
         urllib3_logger = logging.getLogger("urllib3")
         urllib3_logger.setLevel(logging.DEBUG)
@@ -1032,7 +1051,8 @@ if __name__ == "__main__":
         urllib3_logger.addHandler(RedirectHandler())
 
     # Start of application.
-    print_meta()
+    if CONFIG["debug_mode"] in ("info", "debug"):
+        print_meta()
     try:
         _check_nmap2json()
     except RuntimeError as error:
