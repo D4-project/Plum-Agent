@@ -30,6 +30,7 @@ from utils.meta import APP_VERSION, print_meta
 from utils.mutils import run_elf, safe_log_value, scanner_logger, terminate_running_elfs
 from utils.setup import parse_masscan_rate, setup
 from utils.scan_stats import masscan_targeted_ports, nmap_targeted_ports
+from utils.masscan_report import masscan_report_stream
 from utils.netutils import robust_request
 from utils.logrotation import parse_logrotation
 from utils.scanparallel import parse_scanparallel, scanner_parallel_limits
@@ -760,7 +761,7 @@ def run_scan_job(job_message):
             if scan_tool == "nmap" or os.path.getsize(output_xml):
                 if scan_tool == "masscan":
                     results = nmap_file_to_json(
-                        output_xml,
+                        masscan_report_stream(output_xml),
                         True,
                         True,
                         hostname_resolver=lambda address: _masscan_hostnames_for_open_ip(
@@ -783,6 +784,11 @@ def run_scan_job(job_message):
                             ports_targeted = None
         except (OSError, SyntaxError, ValueError) as error:
             logger.error("Job %s invalid scan output: %s", job_uid, error)
+            try:
+                os.replace(output_xml, output_xml + ".invalid")
+                logger.warning("Job %s rejected XML retained as .xml.invalid", job_uid)
+            except OSError:
+                logger.warning("Job %s could not preserve rejected XML", job_uid)
             _release_job(range_uid, attempt_uid)
             return False
         finally:

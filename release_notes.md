@@ -1,5 +1,9 @@
 # Release notes
 
+- Repair malformed Masscan report IPv6 addresses ending in a single colon by
+  appending `:0` in the agent before JSON conversion. Preserve valid addresses
+  and retain rejected reports as `.xml.invalid` for diagnosis.
+
 - Add independent `nmap_scanparallel` and `masscan_scanparallel` limits,
   configurable with `-s --nmap-scanparallel N --masscan-scanparallel M`.
   `scanparallel` / `-scanparallel` provides the fallback per scanner (default 1),
