@@ -1,4 +1,5 @@
 # Output: none = errors only, info = agent summaries, debug = full diagnostics.
+# Setup mode (-s) also displays warnings with debug: none.
 # CLI -v shows agent status and scanner output. -vv enables full diagnostics.
 debug: none
 # debug: info
@@ -16,5 +17,6 @@ debug: none
 # Masscan IPv4/IPv6 capability is detected from external connectivity at startup.
 # Dedicated source addresses for Masscan banner detection. Each is optional.
 # Assign a matching family address to the network without adding it to a kernel interface.
+# An address already assigned to a kernel interface triggers a warning, not a startup failure.
 # masscan_ip_v4: 192.0.2.10
 # masscan_ip_v6: 2001:db8::10

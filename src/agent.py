@@ -201,14 +201,16 @@ def resolve_debug_mode(config_value, cli_verbosity=0):
     raise ValueError("debug must be one of: none, info, debug")
 
 
-def configure_log_levels(mode):
-    """Expose scanner DEBUG records independently of general agent logs."""
+def configure_log_levels(mode, setup_mode=False):
+    """Set agent/scanner verbosity and keep setup warnings visible."""
     level = {
         "none": logging.ERROR,
         "info": logging.INFO,
         "scanner": logging.INFO,
         "debug": logging.DEBUG,
     }[mode]
+    if setup_mode:
+        level = min(level, logging.WARNING)
     logger.setLevel(level)
     scanner_logger.setLevel(logging.DEBUG if mode == "scanner" else logging.NOTSET)
 
@@ -541,7 +543,8 @@ def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=Non
         job_message.get("job") or "", user_hostnames_by_ip
     )
     arguments = [
-        target for target in arguments
+        target
+        for target in arguments
         if ipaddress.ip_network(target, strict=False).version == version
     ]
     if not arguments:
@@ -719,7 +722,9 @@ def run_scan_job(job_message):
         logger.debug(
             "Job %s full %s command: %s", job_uid, scan_tool.capitalize(), full_command
         )
-        logger.info("Job %s %s scan started target=%s", job_uid, scan_tool, range_toscan)
+        logger.info(
+            "Job %s %s scan started target=%s", job_uid, scan_tool, range_toscan
+        )
         return_code = run_elf(
             executable,
             run_args,
@@ -727,7 +732,9 @@ def run_scan_job(job_message):
             job_uid=job_uid,
         )
     else:
-        logger.info("Job %s %s family slice is empty; reporting no results", job_uid, scan_tool)
+        logger.info(
+            "Job %s %s family slice is empty; reporting no results", job_uid, scan_tool
+        )
         return_code = 0
     if return_code and return_code < 0:
         logger.warning("Job %s scan interrupted", job_uid)
@@ -992,15 +999,21 @@ if __name__ == "__main__":
     parser.add_argument("-agentkey", help="Agent Key")
     parser.add_argument("-ipext", help="Force External IP")
     parser.add_argument(
-        "--masscan-ip", "-masscan_ip", dest="masscan_ip",
+        "--masscan-ip",
+        "-masscan_ip",
+        dest="masscan_ip",
         help="Deprecated: dedicated Masscan source address; use the family-specific option",
     )
     parser.add_argument(
-        "--masscan-ip-v4", "-masscan_ip_v4", dest="masscan_ip_v4",
+        "--masscan-ip-v4",
+        "-masscan_ip_v4",
+        dest="masscan_ip_v4",
         help="Dedicated IPv4 source IP for Masscan banner detection",
     )
     parser.add_argument(
-        "--masscan-ip-v6", "-masscan_ip_v6", dest="masscan_ip_v6",
+        "--masscan-ip-v6",
+        "-masscan_ip_v6",
+        dest="masscan_ip_v6",
         help="Dedicated IPv6 source IP for Masscan banner detection",
     )
     parser.add_argument(
@@ -1030,7 +1043,7 @@ if __name__ == "__main__":
         CONFIG["debug_mode"] = resolve_debug_mode(CONFIG.get("debug"), args.verbose)
     except ValueError as error:
         parser.error(str(error))
-    configure_log_levels(CONFIG["debug_mode"])
+    configure_log_levels(CONFIG["debug_mode"], setup_mode=args.setup)
     if CONFIG["debug_mode"] == "debug":
         # Configure urllib3 for debug logging
         urllib3_logger = logging.getLogger("urllib3")

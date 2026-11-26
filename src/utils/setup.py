@@ -21,7 +21,7 @@ logger = logging.getLogger("Plum_Agent")
 
 
 def validate_masscan_ip(value, version=None):
-    """Require a dedicated unicast source address of the requested family."""
+    """Validate the source family and warn about kernel interface assignment."""
     if value in (None, ""):
         return None
     address = ipaddress.ip_address(value)
@@ -44,9 +44,11 @@ def validate_masscan_ip(value, version=None):
     for interface in json.loads(result.stdout):
         for info in interface.get("addr_info", []):
             if ipaddress.ip_address(info["local"]) == address:
-                raise ValueError(
-                    "masscan_ip must not be assigned to a kernel interface"
+                logger.warning(
+                    "Masscan source IP is already assigned to a kernel interface; "
+                    "continuing. A dedicated source IP is recommended for banner detection."
                 )
+                return str(address)
     return str(address)
 
 
@@ -362,17 +364,20 @@ def setup(cfg, cmd_args):
             external_ips.setdefault(address.version, str(address))
     if "masscan" in capabilities:
         cfg["masscan_ipv4"] = 4 in external_ips
-        cfg["masscan_ipv6"] = (
-            6 in external_ips and bool(cfg.get("masscan_ipv6_binary"))
-        )
+        cfg["masscan_ipv6"] = 6 in external_ips and bool(cfg.get("masscan_ipv6_binary"))
         logger.info(
             "Masscan address families enabled: IPv4=%s IPv6=%s",
-            cfg["masscan_ipv4"], cfg["masscan_ipv6"],
+            cfg["masscan_ipv4"],
+            cfg["masscan_ipv6"],
         )
         if not cfg["masscan_ipv4"] and not cfg["masscan_ipv6"]:
-            logger.warning("Masscan found, but no externally reachable IP family was detected")
+            logger.warning(
+                "Masscan found, but no externally reachable IP family was detected"
+            )
             if "nmap" not in capabilities and not cmd_args.setup:
-                logger.error("Masscan cannot start without external IPv4 or IPv6 connectivity")
+                logger.error(
+                    "Masscan cannot start without external IPv4 or IPv6 connectivity"
+                )
                 sys.exit(1)
             capabilities = [tool for tool in capabilities if tool != "masscan"]
             cfg["capabilities"] = capabilities

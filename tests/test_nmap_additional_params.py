@@ -14,6 +14,10 @@ import agent  # pylint: disable=wrong-import-position
 class NmapAdditionalParamsTests(unittest.TestCase):
     """Verify safe parsing, defaults, and overrides."""
 
+    def setUp(self):
+        """Keep Nmap tests independent of the local agent's enabled scanners."""
+        self.enterContext(mock.patch.dict(agent.CONFIG, {"capabilities": ["nmap"]}))
+
     def _build_args(self, value=...):
         job_message = {"job": "example.test,192.0.2.1"}
         if value is not ...:

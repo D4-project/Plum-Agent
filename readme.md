@@ -20,13 +20,23 @@ commit hash.
 
 ### Supported scanners
 
-Configure the dedicated banner source with `python src/agent.py -s --masscan-ip ADDRESS`.
+Configure banner sources with `python src/agent.py -s --masscan-ip-v4 ADDRESS`
+and/or `--masscan-ip-v6 ADDRESS`. The legacy `--masscan-ip ADDRESS` option selects
+the corresponding family automatically.
 Reserve an unused address on the local subnet outside the kernel's interfaces.
-The agent checks its format and local assignment. The operator must verify that
-the address is unused and reachable on the network. Restart the agent to announce
-it to Island. Clear it with `--masscan-ip ""`. Masscan uses `--source-ip` for banner
+The agent checks its format and warns if it is assigned to a kernel interface;
+setup and startup continue. Setup mode (`-s`) displays warnings even with `debug: none`.
+The operator must verify that no other device uses the address and that it is
+reachable on the network. Restart the agent to announce
+it to Island. Clear a family with `--masscan-ip-v4 ""` or `--masscan-ip-v6 ""`.
+Masscan uses `--source-ip` for banner
 jobs, which must use the same address family. Without this setting, the agent
 receives Masscan port checks only. No firewall configuration is required by Plum.
+
+IPv4/IPv6 availability is detected independently from external connectivity and
+Masscan binary support. Island must supply `scan_family: ipv4` or `ipv6` for each
+Masscan job. Only matching targets are scanned; an empty family slice completes
+without invoking Masscan.
 
 Nmap and Masscan. At startup, the agent enables every supported executable found
 on `PATH` unless it is explicitly disabled in the configuration. It exits before

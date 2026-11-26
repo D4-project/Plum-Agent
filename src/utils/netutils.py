@@ -35,8 +35,15 @@ def get_ext_ips():
                 logger.info("Detected external IPv%s address", version)
             else:
                 logger.info("No external IPv%s address detected", version)
-        except (Timeout, SSLError, ConnectionError, socket.gaierror,
-                TypeError, ValueError, RequestException) as error:
+        except (
+            Timeout,
+            SSLError,
+            ConnectionError,
+            socket.gaierror,
+            TypeError,
+            ValueError,
+            RequestException,
+        ) as error:
             logger.info("External IPv%s connectivity unavailable: %s", version, error)
     return detected
 

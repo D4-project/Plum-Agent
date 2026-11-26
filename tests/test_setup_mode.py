@@ -15,16 +15,72 @@ from utils import netutils, setup
 class SetupModeTest(unittest.TestCase):
     """Regression checks for setup mode test."""
 
-    def test_dedicated_masscan_ip_rejects_kernel_address(self):
-        """Verify dedicated masscan ip rejects kernel address."""
+    def test_masscan_ip_warns_for_kernel_address(self):
+        """IPv4/IPv6 kernel addresses are accepted with a single warning."""
+        for address in ("192.0.2.10", "2001:db8::10"):
+            with (
+                self.subTest(address=address),
+                patch.object(setup.subprocess, "run") as run,
+            ):
+                run.return_value.stdout = json.dumps(
+                    [{"addr_info": [{"local": address}, {"local": address}]}]
+                )
+                with self.assertLogs("Plum_Agent", level="WARNING") as logs:
+                    self.assertEqual(setup.validate_masscan_ip(address), address)
+                self.assertEqual(len(logs.records), 1)
+                self.assertEqual(logs.records[0].levelname, "WARNING")
+                self.assertIn("kernel interface; continuing", logs.output[0])
+
+    def test_masscan_ip_still_validates_unicast_addresses_and_family(self):
+        """A warning for kernel assignment does not bypass address validation."""
         with patch.object(setup.subprocess, "run") as run:
             run.return_value.stdout = '[{"addr_info":[{"local":"192.0.2.10"}]}]'
-            with self.assertRaises(ValueError):
-                setup.validate_masscan_ip("192.0.2.10")
-            self.assertEqual(setup.validate_masscan_ip("192.0.2.11"), "192.0.2.11")
+            with self.assertNoLogs("Plum_Agent", level="WARNING"):
+                self.assertEqual(setup.validate_masscan_ip("192.0.2.11"), "192.0.2.11")
         for address in ("garbage", "127.0.0.1", "224.0.0.1", "0.0.0.0"):
             with self.subTest(address=address), self.assertRaises(ValueError):
                 setup.validate_masscan_ip(address)
+        with self.assertRaises(ValueError):
+            setup.validate_masscan_ip("2001:db8::10", version=4)
+
+    def test_setup_accepts_assigned_masscan_ip_from_cli_or_yaml(self):
+        """Legacy/family CLI options and YAML no longer stop setup on local IPs."""
+        for source, key, address in (
+            ("cli", "masscan_ip", "192.0.2.10"),
+            ("cli", "masscan_ip_v4", "192.0.2.10"),
+            ("cli", "masscan_ip_v6", "2001:db8::10"),
+            ("yaml", "masscan_ip_v4", "192.0.2.10"),
+            ("yaml", "masscan_ip_v6", "2001:db8::10"),
+        ):
+            args = Namespace(setup=True)
+            config = {
+                "uid": "test-agent",
+                "ext_ip": "192.0.2.1",
+                "island": "https://example.invalid",
+                "agent_key": "test-only",
+                "nmap_disabled": True,
+                "masscan_disabled": True,
+            }
+            if source == "cli":
+                setattr(args, key, address)
+            else:
+                config[key] = address
+            with (
+                self.subTest(source=source, key=key),
+                patch.object(setup.subprocess, "run") as run,
+                patch.object(setup, "save_config") as save,
+                patch.object(setup, "robust_request") as request,
+                self.assertLogs("Plum_Agent", level="WARNING"),
+            ):
+                run.return_value.stdout = json.dumps(
+                    [{"addr_info": [{"local": address}]}]
+                )
+                result = setup.setup(config, args)
+                expected_key = "masscan_ip_v4" if key == "masscan_ip" else key
+                self.assertEqual(result[expected_key], address)
+                if source == "cli":
+                    save.assert_called()
+                request.assert_not_called()
 
     def test_invalid_disabled_flags_stop_before_discovery_or_registration(self):
         """Verify invalid disabled flags stop before discovery or registration."""

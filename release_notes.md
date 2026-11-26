@@ -1,5 +1,8 @@
 # Release notes
 
+- Warn instead of aborting when a Masscan source IP is assigned to a kernel
+  interface. Keep setup warnings visible with `-s` even when `debug: none`.
+
 - Require nmap2json 2611.5. Nonzero response TTL values are excluded from
   host and port hashes.
 
@@ -22,7 +25,7 @@
   masking through the published nmap2json 2611.4 dependency.
 
 - Configure a dedicated Masscan banner source with --masscan-ip. Announce it at
-  startup, reject local kernel addresses, and require it for banner jobs.
+  startup, warn about local kernel addresses, and require it for banner jobs.
 
 - Add Masscan execution with startup discovery, Linux raw-socket capability
   checks, optional banner detection, local hostname resolution and Nmap-compatible

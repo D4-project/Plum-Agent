@@ -16,6 +16,26 @@ from utils import mutils  # pylint: disable=wrong-import-position
 
 
 class DebugModeTests(unittest.TestCase):
+    def setUp(self):
+        """Keep Nmap tests independent of the local agent's enabled scanners."""
+        self.enterContext(mock.patch.dict(agent.CONFIG, {"capabilities": ["nmap"]}))
+
+    def test_quiet_setup_still_shows_warnings(self):
+        """Setup warnings remain visible with default debug:none."""
+        self.addCleanup(agent.logger.setLevel, agent.logger.level)
+        self.addCleanup(mutils.scanner_logger.setLevel, mutils.scanner_logger.level)
+        stream = io.StringIO()
+        with mock.patch.object(
+            agent.logger, "handlers", [logging.StreamHandler(stream)]
+        ):
+            agent.configure_log_levels("none", setup_mode=True)
+            agent.logger.info("setup info")
+            agent.logger.warning("setup warning")
+            agent.logger.error("setup error")
+        self.assertEqual(
+            stream.getvalue().splitlines(), ["setup warning", "setup error"]
+        )
+
     def test_cli_mode_overrides_yaml(self):
         for yaml_mode, cli_count, expected in (
             (None, 0, "none"),

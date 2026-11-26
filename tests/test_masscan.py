@@ -54,6 +54,40 @@ class MasscanJobTests(unittest.TestCase):
                 agent._resolve_masscan_targets("example.test"), ["192.0.2.1"]
             )
 
+    def test_ipv6_job_uses_ipv6_source_and_filters_ipv4(self):
+        """Each family slice selects only its matching targets and source."""
+        job = {
+            "job": "192.0.2.1,2001:db8::1",
+            "scan_family": "ipv6",
+            "detect_protocol": True,
+        }
+        with mock.patch.dict(
+            agent.CONFIG,
+            {
+                "masscan_ipv6": True,
+                "masscan_ip_v4": "192.0.2.10",
+                "masscan_ip_v6": "2001:db8::10",
+            },
+        ):
+            arguments = agent._build_masscan_args(job, "/tmp/result.xml", "443")
+        self.assertEqual(arguments[0], "2001:db8::1")
+        self.assertNotIn("192.0.2.1", arguments)
+        self.assertEqual(arguments[arguments.index("--source-ip") + 1], "2001:db8::10")
+
+    def test_family_slice_without_matching_targets_is_empty(self):
+        """No scanner arguments are produced when the requested family is absent."""
+        self.assertEqual(
+            agent._build_masscan_args(
+                {"job": "192.0.2.1", "scan_family": "ipv6"}, "/tmp/result.xml", "443"
+            ),
+            [],
+        )
+
+    def test_missing_family_is_rejected(self):
+        """Do not mix IPv4/IPv6 targets in a job with no family contract."""
+        with self.assertRaisesRegex(ValueError, "scan_family"):
+            agent._build_masscan_args({"job": "192.0.2.1"}, "/tmp/result.xml", "443")
+
     def test_banner_jobs_require_a_matching_dedicated_ip(self):
         """Verify banner jobs require a matching dedicated ip."""
         job = {"job": "192.0.2.1", "scan_family": "ipv4", "detect_protocol": True}
@@ -86,9 +120,9 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False, **_kwargs):
+            def run(_executable, arguments, show_output=False, *, job_uid=None):
                 """Provide the run test fixture."""
-                del show_output
+                del show_output, job_uid
                 with open(
                     arguments[arguments.index("-oX") + 1], "w", encoding="utf-8"
                 ) as handle:
@@ -165,7 +199,9 @@ class MasscanJobTests(unittest.TestCase):
 
     def test_successful_report_is_sent_through_nmap2json(self):
         """Verify successful report is sent through nmap2json."""
-        self.enterContext(mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "192.0.2.10"}))
+        self.enterContext(
+            mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "192.0.2.10"})
+        )
         document = (
             '<nmaprun scanner="masscan"><host starttime="80" endtime="100">'
             '<address addr="192.0.2.1"/><ports><port portid="22" protocol="tcp">'
@@ -175,9 +211,9 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False, **_kwargs):
+            def run(_executable, arguments, show_output=False, *, job_uid=None):
                 """Provide the run test fixture."""
-                del show_output
+                del show_output, job_uid
                 output = arguments[arguments.index("-oX") + 1]
                 with open(output, "w", encoding="utf-8") as handle:
                     handle.write(document)
@@ -230,9 +266,9 @@ class MasscanJobTests(unittest.TestCase):
         sent = {}
         with tempfile.TemporaryDirectory() as temp:
 
-            def run(_executable, arguments, show_output=False, **_kwargs):
+            def run(_executable, arguments, show_output=False, *, job_uid=None):
                 """Provide the run test fixture."""
-                del show_output
+                del show_output, job_uid
                 open(arguments[arguments.index("-oX") + 1], "wb").close()
                 return 0
 
