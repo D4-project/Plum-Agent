@@ -36,7 +36,9 @@ receives Masscan port checks only. No firewall configuration is required by Plum
 IPv4/IPv6 availability is detected independently from external connectivity and
 Masscan binary support. Island must supply `scan_family: ipv4` or `ipv6` for each
 Masscan job. Only matching targets are scanned; an empty family slice completes
-without invoking Masscan.
+without invoking Masscan. Unresolved hostnames are skipped with a warning;
+remaining targets are scanned. If none remain, the job completes with an empty
+result instead of returning to the queue.
 
 Nmap and Masscan. At startup, the agent enables every supported executable found
 on `PATH` unless it is explicitly disabled in the configuration. It exits before

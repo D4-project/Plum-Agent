@@ -54,6 +54,94 @@ class MasscanJobTests(unittest.TestCase):
                 agent._resolve_masscan_targets("example.test"), ["192.0.2.1"]
             )
 
+    def test_unresolved_hostname_does_not_discard_other_targets(self):
+        """A DNS failure leaves direct targets and subsequent DNS results usable."""
+        hostnames = {}
+        with (
+            mock.patch.object(
+                agent.socket,
+                "getaddrinfo",
+                side_effect=[
+                    agent.socket.gaierror(-2, "Name or service not known"),
+                    [(None, None, None, None, ("192.0.2.5", 0))],
+                ],
+            ),
+            self.assertLogs(agent.logger, level="WARNING") as logs,
+        ):
+            arguments = agent._build_masscan_args(
+                {
+                    "job": "missing.test,192.0.2.0/31,example.test",
+                    "scan_family": "ipv4",
+                },
+                "/tmp/result.xml",
+                "443",
+                hostnames,
+            )
+        self.assertEqual(arguments[:2], ["192.0.2.0/31", "192.0.2.5"])
+        self.assertEqual(hostnames, {"192.0.2.5": {"example.test"}})
+        self.assertIn("Skipping unresolved Masscan target missing.test", logs.output[0])
+
+    def test_unresolved_job_submits_empty_result_without_scanning(self):
+        """Single or multiple DNS failures complete each IP family with no retry."""
+        for family in ("ipv4", "ipv6"):
+            for targets in ("missing.test", "missing.test,also-missing.test"):
+                with (
+                    self.subTest(family=family, targets=targets),
+                    tempfile.TemporaryDirectory() as temp,
+                    mock.patch.dict(
+                        agent.CONFIG,
+                        {
+                            "THIS_DIR": temp,
+                            "capabilities": ["masscan"],
+                            "botinfo": {},
+                            "APIPATH": SimpleNamespace(
+                                sndjob="http://controller/result"
+                            ),
+                        },
+                        clear=True,
+                    ),
+                    mock.patch.object(
+                        agent.socket,
+                        "getaddrinfo",
+                        side_effect=agent.socket.gaierror(
+                            -2, "Name or service not known"
+                        ),
+                    ),
+                    mock.patch.object(agent, "run_elf") as scan,
+                    mock.patch.object(agent, "nmap_file_to_json") as parse,
+                    mock.patch.object(agent, "_release_job") as release,
+                    mock.patch.object(agent, "robust_request", return_value={}) as send,
+                    self.assertLogs(agent.logger, level="WARNING"),
+                ):
+                    self.assertTrue(
+                        agent.run_scan_job(
+                            {
+                                "job": targets,
+                                "job_uid": self.UID,
+                                "attempt_uid": self.ATTEMPT_UID,
+                                "scan_tool": "masscan",
+                                "scan_family": family,
+                                "scan_ports": [443],
+                                "detect_protocol": True,
+                                "report_target_count": True,
+                            }
+                        )
+                    )
+                    scan.assert_not_called()
+                    parse.assert_not_called()
+                    release.assert_not_called()
+                    send.assert_called_once_with(
+                        "http://controller/result",
+                        method="POST",
+                        data={
+                            "JOB_UID": self.UID,
+                            "ATTEMPT_UID": self.ATTEMPT_UID,
+                            "RESULT": "[]",
+                            "PORTS_TARGETED": 0,
+                        },
+                        max_retries=3,
+                    )
+
     def test_ipv6_job_uses_ipv6_source_and_filters_ipv4(self):
         """Each family slice selects only its matching targets and source."""
         job = {

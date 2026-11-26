@@ -492,9 +492,12 @@ def _resolve_masscan_targets(raw_targets, user_hostnames_by_ip=None):
                     or CONFIG.get("masscan_ipv6", True)
                 ]
             except socket.gaierror as error:
-                raise ValueError(
-                    f"cannot resolve target {target!r}: {error}"
-                ) from error
+                logger.warning(
+                    "Skipping unresolved Masscan target %s: %s",
+                    safe_log_value(target),
+                    safe_log_value(error),
+                )
+                continue
         for value in values:
             if is_hostname and user_hostnames_by_ip is not None:
                 normalized_ip = str(ipaddress.ip_address(value))
@@ -502,8 +505,6 @@ def _resolve_masscan_targets(raw_targets, user_hostnames_by_ip=None):
             if value not in seen:
                 seen.add(value)
                 resolved.append(value)
-    if not resolved:
-        raise ValueError("job has no resolvable target")
     return resolved
 
 

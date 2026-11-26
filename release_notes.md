@@ -1,5 +1,8 @@
 # Release notes
 
+- Skip unresolved Masscan hostnames with a warning and scan remaining targets.
+  If none remain, submit an empty result instead of returning the job to the queue.
+
 - Warn instead of aborting when a Masscan source IP is assigned to a kernel
   interface. Keep setup warnings visible with `-s` even when `debug: none`.
 
