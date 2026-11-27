@@ -32,27 +32,28 @@ class MasscanJobTests(unittest.TestCase):
             mock.patch.dict(agent.CONFIG, {"masscan_ip_v4": "192.0.2.10"}),
             mock.patch.object(
                 agent.socket, "getaddrinfo", return_value=[address, address]
-            ),
+            ) as resolve,
         ):
             arguments = agent._build_masscan_args(job, "/tmp/result.xml", "22,443")
+        resolve.assert_called_once_with(
+            "example.test",
+            None,
+            family=agent.socket.AF_INET,
+            type=agent.socket.SOCK_STREAM,
+        )
         self.assertEqual(arguments[:2], ["192.0.2.0/31", "192.0.2.5"])
         self.assertEqual(arguments[arguments.index("--source-ip") + 1], "192.0.2.10")
         self.assertIn("--banners", arguments)
         self.assertEqual(arguments[arguments.index("--rate") + 1], "1000")
 
-    def test_resolution_drops_ipv6_when_binary_probe_failed(self):
-        """Verify resolution drops ipv6 when binary probe failed."""
-        addresses = [
-            (None, None, None, None, ("192.0.2.1", 0)),
-            (None, None, None, None, ("2001:db8::1", 0, 0, 0)),
-        ]
+    def test_ipv6_resolution_is_skipped_when_binary_probe_failed(self):
+        """Skip DNS for an IPv6 job the scanner cannot run."""
         with (
             mock.patch.dict(agent.CONFIG, {"masscan_ipv6": False}, clear=False),
-            mock.patch.object(agent.socket, "getaddrinfo", return_value=addresses),
+            mock.patch.object(agent.socket, "getaddrinfo") as resolve,
         ):
-            self.assertEqual(
-                agent._resolve_masscan_targets("example.test"), ["192.0.2.1"]
-            )
+            self.assertEqual(agent._resolve_masscan_targets("example.test", 6), [])
+        resolve.assert_not_called()
 
     def test_unresolved_hostname_does_not_discard_other_targets(self):
         """A DNS failure leaves direct targets and subsequent DNS results usable."""
@@ -143,23 +144,39 @@ class MasscanJobTests(unittest.TestCase):
                     )
 
     def test_ipv6_job_uses_ipv6_source_and_filters_ipv4(self):
-        """Each family slice selects only its matching targets and source."""
+        """Resolve IPv6 only and use an IPv6 source and targets."""
         job = {
-            "job": "192.0.2.1,2001:db8::1",
+            "job": "192.0.2.1,2001:db8::1,example.test",
             "scan_family": "ipv6",
             "detect_protocol": True,
         }
-        with mock.patch.dict(
-            agent.CONFIG,
-            {
-                "masscan_ipv6": True,
-                "masscan_ip_v4": "192.0.2.10",
-                "masscan_ip_v6": "2001:db8::10",
-            },
+        address = (agent.socket.AF_INET6, None, None, None, ("2001:db8::5", 0, 0, 0))
+        hostnames = {}
+        with (
+            mock.patch.dict(
+                agent.CONFIG,
+                {
+                    "masscan_ipv6": True,
+                    "masscan_ip_v4": "192.0.2.10",
+                    "masscan_ip_v6": "2001:db8::10",
+                },
+            ),
+            mock.patch.object(
+                agent.socket, "getaddrinfo", return_value=[address]
+            ) as resolve,
         ):
-            arguments = agent._build_masscan_args(job, "/tmp/result.xml", "443")
-        self.assertEqual(arguments[0], "2001:db8::1")
+            arguments = agent._build_masscan_args(
+                job, "/tmp/result.xml", "443", hostnames
+            )
+        resolve.assert_called_once_with(
+            "example.test",
+            None,
+            family=agent.socket.AF_INET6,
+            type=agent.socket.SOCK_STREAM,
+        )
+        self.assertEqual(arguments[:2], ["2001:db8::1", "2001:db8::5"])
         self.assertNotIn("192.0.2.1", arguments)
+        self.assertEqual(hostnames, {"2001:db8::5": {"example.test"}})
         self.assertEqual(arguments[arguments.index("--source-ip") + 1], "2001:db8::10")
 
     def test_family_slice_without_matching_targets_is_empty(self):

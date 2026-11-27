@@ -465,8 +465,12 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     return [argument for argument in run_args if argument]
 
 
-def _resolve_masscan_targets(raw_targets, user_hostnames_by_ip=None):
-    """Resolve hostnames locally and return stable, distinct IP/CIDR targets."""
+def _resolve_masscan_targets(raw_targets, ip_version, user_hostnames_by_ip=None):
+    """Resolve and deduplicate targets in the job's IP family."""
+    if ip_version == 6 and not CONFIG.get("masscan_ipv6", True):
+        return []
+
+    dns_family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
     resolved = []
     seen = set()
     for raw_target in raw_targets.split(","):
@@ -476,21 +480,15 @@ def _resolve_masscan_targets(raw_targets, user_hostnames_by_ip=None):
         try:
             network = ipaddress.ip_network(target, strict=False)
             is_hostname = False
-            values = (
-                [target]
-                if network.version == 4 or CONFIG.get("masscan_ipv6", True)
-                else []
-            )
+            values = [target] if network.version == ip_version else []
         except ValueError:
             is_hostname = True
             try:
                 values = [
                     item[4][0]
                     for item in socket.getaddrinfo(
-                        target, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+                        target, None, family=dns_family, type=socket.SOCK_STREAM
                     )
-                    if ipaddress.ip_address(item[4][0]).version == 4
-                    or CONFIG.get("masscan_ipv6", True)
                 ]
             except socket.gaierror as error:
                 logger.warning(
@@ -542,13 +540,8 @@ def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=Non
         raise ValueError("Masscan job is missing a valid scan_family")
     version = 4 if family == "ipv4" else 6
     arguments = _resolve_masscan_targets(
-        job_message.get("job") or "", user_hostnames_by_ip
+        job_message.get("job") or "", version, user_hostnames_by_ip
     )
-    arguments = [
-        target
-        for target in arguments
-        if ipaddress.ip_network(target, strict=False).version == version
-    ]
     if not arguments:
         # A hostname may have no addresses in this job's family. Complete this
         # family slice as an empty scan instead of returning it to the queue.
