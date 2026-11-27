@@ -143,14 +143,21 @@ class MasscanJobTests(unittest.TestCase):
                         max_retries=3,
                     )
 
-    def test_ipv6_job_uses_ipv6_source_and_filters_ipv4(self):
-        """Resolve IPv6 only and use an IPv6 source and targets."""
+    def test_ipv6_job_resolves_only_public_ipv6_targets(self):
+        """Keep public AAAA answers and use the configured IPv6 source."""
         job = {
-            "job": "192.0.2.1,2001:db8::1,example.test",
+            "job": "192.0.2.1,2001:db9::1,example.test",
             "scan_family": "ipv6",
             "detect_protocol": True,
         }
-        address = (agent.socket.AF_INET6, None, None, None, ("2001:db8::5", 0, 0, 0))
+        addresses = [
+            (agent.socket.AF_INET6, None, None, None, ("::1", 0, 0, 0)),
+            (agent.socket.AF_INET6, None, None, None, ("fe80::5", 0, 0, 0)),
+            (agent.socket.AF_INET6, None, None, None, ("fd00::5", 0, 0, 0)),
+            (agent.socket.AF_INET6, None, None, None, ("2001:db8::5", 0, 0, 0)),
+            (agent.socket.AF_INET6, None, None, None, ("3fff::5", 0, 0, 0)),
+            (agent.socket.AF_INET6, None, None, None, ("2001:db9::5", 0, 0, 0)),
+        ]
         hostnames = {}
         with (
             mock.patch.dict(
@@ -162,7 +169,7 @@ class MasscanJobTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                agent.socket, "getaddrinfo", return_value=[address]
+                agent.socket, "getaddrinfo", return_value=addresses
             ) as resolve,
         ):
             arguments = agent._build_masscan_args(
@@ -174,10 +181,30 @@ class MasscanJobTests(unittest.TestCase):
             family=agent.socket.AF_INET6,
             type=agent.socket.SOCK_STREAM,
         )
-        self.assertEqual(arguments[:2], ["2001:db8::1", "2001:db8::5"])
-        self.assertNotIn("192.0.2.1", arguments)
-        self.assertEqual(hostnames, {"2001:db8::5": {"example.test"}})
+        self.assertEqual(arguments[:3], ["2001:db9::1", "2001:db9::5", "--banners"])
+        self.assertEqual(hostnames, {"2001:db9::5": {"example.test"}})
         self.assertEqual(arguments[arguments.index("--source-ip") + 1], "2001:db8::10")
+
+    def test_ipv6_targets_exclude_non_public_addresses_and_subnets(self):
+        """Only globally reachable parts of an explicit IPv6 target are kept."""
+        targets = (
+            "::,::1,::ffff:8.8.8.8,fe80::1%eth0,fe80::/64,fe80::/9,"
+            "fc00::/7,fec0::/10,ff02::1,100:0:0:1::1,2001:2::1,"
+            "2001:db8::/32,2002::1,3ffe::1,3fff::/20"
+        )
+        with mock.patch.dict(agent.CONFIG, {"masscan_ipv6": True}):
+            self.assertEqual(
+                agent._build_masscan_args(
+                    {"job": targets, "scan_family": "ipv6"},
+                    "/tmp/result.xml",
+                    "443",
+                ),
+                [],
+            )
+            self.assertEqual(
+                agent._resolve_masscan_targets("2001:db8::/31,2001:2::/31", 6),
+                ["2001:db9::/32", "2001:3::/32"],
+            )
 
     def test_family_slice_without_matching_targets_is_empty(self):
         """No scanner arguments are produced when the requested family is absent."""

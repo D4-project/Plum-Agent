@@ -48,6 +48,24 @@ STANDBY_SLEEP = 60
 BACKOFF_START = 5
 BACKOFF_MAX = 60
 NSE_CACHE_LOCK = threading.Lock()
+IPV6_GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
+# IANA IPv6 special-purpose and global-unicast registries. Keep the globally
+# reachable assignments within the IETF protocol block as explicit exceptions.
+IPV6_IETF_PROTOCOL_ASSIGNMENTS = ipaddress.IPv6Network("2001::/23")
+IPV6_NON_PUBLIC = (
+    IPV6_IETF_PROTOCOL_ASSIGNMENTS,
+    ipaddress.IPv6Network("2001:db8::/32"),
+    ipaddress.IPv6Network("2002::/16"),
+    ipaddress.IPv6Network("3ffe::/16"),
+    ipaddress.IPv6Network("3fff::/20"),
+)
+IPV6_PUBLIC_EXCEPTIONS = tuple(
+    ipaddress.IPv6Network(prefix)
+    for prefix in (
+        "2001:1::1", "2001:1::2", "2001:1::3", "2001:3::/32",
+        "2001:4:112::/48", "2001:20::/28", "2001:30::/28",
+    )
+)
 SHELL_CONTROL_CHARACTERS = frozenset(";&|<>`$()\r\n")
 MAX_NMAP_ADDITIONAL_PARAMS_LENGTH = 4096
 MAX_INFO_NMAP_COMMAND_LENGTH = 132
@@ -465,8 +483,37 @@ def _build_nmap_args(job_message, output_xml, nmap_ports, nmap_nse_targets):
     return [argument for argument in run_args if argument]
 
 
+def _masscan_public_ipv6_ranges(network):
+    """Return the public unicast subnets within an IPv6 target network."""
+    if not network.overlaps(IPV6_GLOBAL_UNICAST):
+        return []
+    if IPV6_GLOBAL_UNICAST.prefixlen > network.prefixlen:
+        network = IPV6_GLOBAL_UNICAST
+
+    public = [network]
+    for excluded in IPV6_NON_PUBLIC:
+        if not excluded.overlaps(network):
+            continue
+        remaining = []
+        for part in public:
+            if part.subnet_of(excluded):
+                continue
+            if excluded.subnet_of(part):
+                remaining.extend(part.address_exclude(excluded))
+            else:
+                remaining.append(part)
+        public = remaining
+    if network.overlaps(IPV6_IETF_PROTOCOL_ASSIGNMENTS):
+        public.extend(
+            exception if exception.subnet_of(network) else network
+            for exception in IPV6_PUBLIC_EXCEPTIONS
+            if exception.overlaps(network)
+        )
+    return public
+
+
 def _resolve_masscan_targets(raw_targets, ip_version, user_hostnames_by_ip=None):
-    """Resolve and deduplicate targets in the job's IP family."""
+    """Resolve and deduplicate targets in the job family, keeping public IPv6."""
     if ip_version == 6 and not CONFIG.get("masscan_ipv6", True):
         return []
 
@@ -479,8 +526,6 @@ def _resolve_masscan_targets(raw_targets, ip_version, user_hostnames_by_ip=None)
             continue
         try:
             network = ipaddress.ip_network(target, strict=False)
-            is_hostname = False
-            values = [target] if network.version == ip_version else []
         except ValueError:
             is_hostname = True
             try:
@@ -497,10 +542,25 @@ def _resolve_masscan_targets(raw_targets, ip_version, user_hostnames_by_ip=None)
                     safe_log_value(error),
                 )
                 continue
+        else:
+            is_hostname = False
+            if network.version != ip_version:
+                continue
+            values = [target]
+            if ip_version == 6:
+                values = [
+                    target if part == network else str(part)
+                    for part in _masscan_public_ipv6_ranges(network)
+                ]
         for value in values:
-            if is_hostname and user_hostnames_by_ip is not None:
-                normalized_ip = str(ipaddress.ip_address(value))
-                user_hostnames_by_ip.setdefault(normalized_ip, set()).add(target)
+            if is_hostname:
+                address = ipaddress.ip_address(value)
+                if ip_version == 6 and not _masscan_public_ipv6_ranges(
+                    ipaddress.IPv6Network(value)
+                ):
+                    continue
+                if user_hostnames_by_ip is not None:
+                    user_hostnames_by_ip.setdefault(str(address), set()).add(target)
             if value not in seen:
                 seen.add(value)
                 resolved.append(value)
@@ -543,8 +603,7 @@ def _build_masscan_args(job_message, output_xml, ports, user_hostnames_by_ip=Non
         job_message.get("job") or "", version, user_hostnames_by_ip
     )
     if not arguments:
-        # A hostname may have no addresses in this job's family. Complete this
-        # family slice as an empty scan instead of returning it to the queue.
+        # Complete a job with no eligible addresses without returning it to the queue.
         return []
     if job_message.get("detect_protocol") is True:
         source = CONFIG.get(f"masscan_ip_v{version}")
